@@ -21,6 +21,7 @@ dist_web_DATA = \
 	registry.html \
 	tv.html \
 	version.txt \
+	cso.html \
 	$(NULL)
 
 webolddir=$(webdir)/old

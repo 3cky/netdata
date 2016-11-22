@@ -13,6 +13,7 @@ dist_python_SCRIPTS = \
     cpufreq.chart.py \
     dovecot.chart.py \
     example.chart.py \
+    cso_nodes.chart.py \
     exim.chart.py \
     hddtemp.chart.py \
     ipfs.chart.py \

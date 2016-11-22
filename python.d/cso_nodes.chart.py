@@ -1,18 +1,10 @@
 import json
-from base import UrlService
+from cso_base import CsoService
 
 # default module values (can be overridden per job in `config`)
 update_every = 10
 priority = 60000
 retries = 60
-
-# default job configuration (overridden by python.d.plugin)
-# config = {'local': {
-#             'update_every': update_every,
-#             'retries': retries,
-#             'priority': priority,
-#             'url': 'http://localhost/stub_status'
-#          }}
 
 # charts order (can be overridden if you want less charts, or different order)
 ORDER = ['datasource.pool', 'datasource.perf', 'conn.service', 'conn.auth', 'auth.service', \
@@ -42,12 +34,12 @@ CHARTS = {
             ['datasource.pool.busy', 'busy'],
             ['datasource.pool.size', 'size'],
             ['datasource.pool.total', 'pooled']
-        ]},     
+        ]},
     'datasource.perf': {
         'options': [None, 'Connections/s', 'connections/s', 'DataSource (perf)', 'cso.datasource.perf', 'area'],
         'lines': [
             ['datasource.pool.picked', 'conn/s', 'incremental']
-        ]},     
+        ]}, 
     'conn.service': {
         'options': [None, 'Connections', 'connections', 'Connections (all)', 'cso.conn.service', 'area'],
         'lines': [
@@ -86,11 +78,11 @@ CHARTS = {
         'lines': [
             ['game.service.pool.size', 'size'],
             ['game.service.pool.load.avg5min', 'avg5min', 'absolute', 1, 1000]
-        ]},             
+        ]},
     'game.perf': {
         'options': [None, 'Tasks/s', 'tasks/s', 'Game (perf)', 'cso.game.perf', 'area'],
         'lines': [
-            ['game.service.pool.tasks.complete', 'tasks/s', 'incremental']            
+            ['game.service.pool.tasks.complete', 'tasks/s', 'incremental']
         ]},
     'game.bots.num': {
         'options': [None, 'Number', 'number', 'Game Bots (num)', 'cso.game.bots.num', 'area'],
@@ -112,79 +104,29 @@ CHARTS = {
 }
 
 
-class Service(UrlService):
+class Service(CsoService):
     def __init__(self, configuration=None, name=None):
-        UrlService.__init__(self, configuration=configuration, name=name)
-        if len(self.url) == 0:
-            self.url = "http://localhost/system/monitor?json&vars"
+        CsoService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
-
-    def _get_mon_data(self, raw):
-        """
-        Get monitorables data from data received from http request to Monitorable Service
-        FIXME: this code assumes that all monitorable vars have unique ids
-        :return: dict
-        """
-        try:
-            parsed = json.loads(raw)
-        except e:
-            return None
-
-        try:
-            data = parsed['data']
-        except:
-            return None
-
-        mon_data = {}
-        for d in data:
-            for var in d['vars']:
-                if var['datatype'] == 'FLOAT':
-                    val = int(float(var['value'])*1000)
-                elif var['datatype'] == 'INT':
-                    val = int(var['value'])
-                else:
-                    val = var['value']
-                mon_data[var['id']] = val
-
-        if len(mon_data) == 0:
-            return None
-        return mon_data
-
-    def _get_data(self):
-        """
-        Format data received from http request
-        :return: dict
-        """
-        self.chart_name = self.name
-
-        try:
-            raw = self._get_raw_data()
-        except:
-            return None
-
-        return self._get_mon_data(raw)
 
     def check(self):
         """
         Check configuration and dynamically create chart lines data
         :return: boolean
         """
-        if not UrlService.check(self):
+        if not CsoService.check(self):
             return False
 
         data = self._get_data()
         if data is None:
             return False
-        
+
         names = []
         for name in data:
             if name.startswith('scheduler.pool.load.avg'):
                 names.append(name)
         for name in sorted(names):
             self.definitions['scheduler.pools']['lines'].append([name, name.rsplit('.', 1)[-1], 'absolute', 1, 1000])
-            
+
         return True
-
-       
-

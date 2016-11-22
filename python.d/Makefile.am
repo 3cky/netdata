@@ -13,7 +13,6 @@ dist_python_SCRIPTS = \
     cpufreq.chart.py \
     dovecot.chart.py \
     example.chart.py \
-    cso_nodes.chart.py \
     exim.chart.py \
     hddtemp.chart.py \
     ipfs.chart.py \
@@ -30,6 +29,8 @@ dist_python_SCRIPTS = \
     squid.chart.py \
     tomcat.chart.py \
     python-modules-installer.sh \
+    cso_games.chart.py \
+    cso_nodes.chart.py \
     $(NULL)
 
 dist_python_DATA = \
@@ -42,6 +43,7 @@ dist_pythonmodules_DATA = \
     python_modules/base.py \
     python_modules/msg.py \
     python_modules/lm_sensors.py \
+    python_modules/cso_base.py \
     $(NULL)
 
 pythonyaml2dir=$(pythonmodulesdir)/pyyaml2

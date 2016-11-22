@@ -32,7 +32,6 @@ dist_pythonconfig_DATA = \
     python.d/cpufreq.conf \
     python.d/dovecot.conf \
     python.d/example.conf \
-    python.d/cso_nodes.conf \
     python.d/exim.conf \
     python.d/hddtemp.conf \
     python.d/ipfs.conf \
@@ -48,6 +47,8 @@ dist_pythonconfig_DATA = \
     python.d/sensors.conf \
     python.d/squid.conf \
     python.d/tomcat.conf \
+    python.d/cso_games.conf \
+    python.d/cso_nodes.conf \
     $(NULL)
 
 healthconfigdir=$(configdir)/health.d

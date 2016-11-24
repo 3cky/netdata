@@ -9,8 +9,8 @@ retries = 60
 # charts order (can be overridden if you want less charts, or different order)
 ORDER = ['datasource.pool', 'datasource.perf', 'conn.service', 'conn.auth', 'auth.service', \
         'game.tables', 'game.authz', 'game.pool', 'game.perf', \
-        'game.bots.num', 'game.bots.pool', 'scheduler.pools', \
-        'system.heap', 'system.threads']
+        'game.bots.num', 'game.bots.pool', 'tournament.pool', 'tournament.perf', \
+        'scheduler.pools', 'system.heap', 'system.threads']
 
 CHARTS = {
     'system.heap': {
@@ -54,7 +54,7 @@ CHARTS = {
             ['local.auth.user.registry.size', 'local']
         ]},
     'auth.service': {
-        'options': [None, 'Number', 'number', 'Authentication', 'cso.auth.service', 'area'],
+        'options': [None, 'Authenticated', 'authenticated', 'Authentication', 'cso.auth.service', 'area'],
         'lines': [
             ['auth.session.number', 'sessions'],
             ['auth.user.number', 'users']
@@ -85,7 +85,7 @@ CHARTS = {
             ['game.service.pool.tasks.complete', 'tasks/s', 'incremental']
         ]},
     'game.bots.num': {
-        'options': [None, 'Number', 'number', 'Game Bots (num)', 'cso.game.bots.num', 'area'],
+        'options': [None, 'Bots', 'bots', 'Game Bots (num)', 'cso.game.bots.num', 'area'],
         'lines': [
             ['game.bots.local.number', 'local'],
             ['game.bots.clustered.number', 'total']
@@ -95,6 +95,17 @@ CHARTS = {
         'lines': [
             ['game.bots.pool.size', 'size'],
             ['game.bots.pool.load.avg5min', 'avg5min', 'absolute', 1, 1000]
+        ]},
+    'tournament.pool': {
+        'options': [None, 'Threads', 'threads', 'Tournament (pool)', 'cso.tournament.pool', 'area'],
+        'lines': [
+            ['tournaments.pool.size', 'size'],
+            ['tournaments.pool.load.avg5min', 'avg5min', 'absolute', 1, 1000]
+        ]},
+    'tournament.perf': {
+        'options': [None, 'Tasks/s', 'tasks/s', 'Tournament (perf)', 'cso.tournament.perf', 'area'],
+        'lines': [
+            ['tournaments.pool.tasks.complete', 'tasks/s', 'incremental']
         ]},
     'scheduler.pools': {
         'options': [None, 'Active tasks (5 min average)', 'active tasks 5 min avg', 'Scheduler (pools)', 'cso.scheduler.pools', 'line'],

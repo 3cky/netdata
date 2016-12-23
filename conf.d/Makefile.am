@@ -49,6 +49,7 @@ dist_pythonconfig_DATA = \
     python.d/tomcat.conf \
     python.d/cso_games.conf \
     python.d/cso_nodes.conf \
+    python.d/ssg_nodes.conf \
     $(NULL)
 
 healthconfigdir=$(configdir)/health.d

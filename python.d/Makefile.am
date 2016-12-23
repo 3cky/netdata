@@ -31,6 +31,7 @@ dist_python_SCRIPTS = \
     python-modules-installer.sh \
     cso_games.chart.py \
     cso_nodes.chart.py \
+    ssg_nodes.chart.py \
     $(NULL)
 
 dist_python_DATA = \

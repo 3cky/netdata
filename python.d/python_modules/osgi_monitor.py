@@ -14,7 +14,7 @@ retries = 60
 #             'url': 'http://localhost/system/monitor?json&vars'
 #          }}
 
-class CsoService(UrlService):
+class OsgiMonitorService(UrlService):
     def __init__(self, configuration=None, name=None):
         UrlService.__init__(self, configuration=configuration, name=name)
         if len(self.url) == 0:

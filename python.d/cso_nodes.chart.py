@@ -1,5 +1,5 @@
 import json
-from cso_base import CsoService
+from osgi_monitor import OsgiMonitorService
 
 # default module values (can be overridden per job in `config`)
 update_every = 10
@@ -115,9 +115,9 @@ CHARTS = {
 }
 
 
-class Service(CsoService):
+class Service(OsgiMonitorService):
     def __init__(self, configuration=None, name=None):
-        CsoService.__init__(self, configuration=configuration, name=name)
+        OsgiMonitorService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
 
@@ -126,7 +126,7 @@ class Service(CsoService):
         Check configuration and dynamically create chart lines data
         :return: boolean
         """
-        if not CsoService.check(self):
+        if not OsgiMonitorService.check(self):
             return False
 
         data = self._get_data()

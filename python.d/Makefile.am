@@ -43,7 +43,7 @@ dist_pythonmodules_DATA = \
     python_modules/base.py \
     python_modules/msg.py \
     python_modules/lm_sensors.py \
-    python_modules/cso_base.py \
+    python_modules/osgi_monitor.py \
     $(NULL)
 
 pythonyaml2dir=$(pythonmodulesdir)/pyyaml2

@@ -22,6 +22,7 @@ dist_web_DATA = \
 	tv.html \
 	version.txt \
 	cso.html \
+	ssg.html \
 	$(NULL)
 
 webolddir=$(webdir)/old

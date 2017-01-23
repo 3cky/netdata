@@ -2,11 +2,10 @@
 
 #define CPU_IDLEJITTER_SLEEP_TIME_MS 20
 
-void *cpuidlejitter_main(void *ptr)
-{
-    if(ptr) { ; }
+void *cpuidlejitter_main(void *ptr) {
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
 
-    info("CPU Idle Jitter thread created with task id %d", gettid());
+    info("IDLEJITTER thread created with task id %d", gettid());
 
     if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
         error("Cannot set pthread cancel type to DEFERRED.");
@@ -29,16 +28,16 @@ void *cpuidlejitter_main(void *ptr)
     struct timeval before, after;
     unsigned long long counter;
     for(counter = 0; 1 ;counter++) {
-        unsigned long long usec = 0, susec = 0;
+        usec_t usec = 0, susec = 0;
 
-        while(susec < (rrd_update_every * 1000000ULL)) {
+        while(susec < (rrd_update_every * USEC_PER_SEC)) {
 
-            gettimeofday(&before, NULL);
+            now_realtime_timeval(&before);
             sleep_usec(sleep_ms * 1000);
-            gettimeofday(&after, NULL);
+            now_realtime_timeval(&after);
 
             // calculate the time it took for a full loop
-            usec = usec_dt(&after, &before);
+            usec = dt_usec(&after, &before);
             susec += usec;
         }
         usec -= (sleep_ms * 1000);
@@ -48,6 +47,9 @@ void *cpuidlejitter_main(void *ptr)
         rrdset_done(st);
     }
 
+    info("IDLEJITTER thread exiting");
+
+    static_thread->enabled = 0;
     pthread_exit(NULL);
     return NULL;
 }

@@ -25,6 +25,7 @@
 #define D_REGISTRY          0x00200000
 #define D_VARIABLES         0x00400000
 #define D_HEALTH            0x00800000
+#define D_CONNECT_TO        0x01000000
 #define D_SYSTEM            0x80000000
 
 //#define DEBUG (D_WEB_CLIENT_ACCESS|D_LISTENER|D_RRD_STATS)
@@ -63,10 +64,10 @@ extern void reopen_all_log_files();
 #define fatal(args...)   fatal_int(__FILE__, __FUNCTION__, __LINE__, ##args)
 
 extern void log_date(FILE *out);
-extern void debug_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) __attribute__ (( format (printf, 4, 5)));
-extern void info_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) __attribute__ (( format (printf, 4, 5)));
-extern void error_int( const char *prefix, const char *file, const char *function, const unsigned long line, const char *fmt, ... ) __attribute__ (( format (printf, 5, 6)));
-extern void fatal_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) __attribute__ ((noreturn, format (printf, 4, 5)));
-extern void log_access( const char *fmt, ... ) __attribute__ (( format (printf, 1, 2)));
+extern void debug_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(4, 5);
+extern void info_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(4, 5);
+extern void error_int( const char *prefix, const char *file, const char *function, const unsigned long line, const char *fmt, ... ) PRINTFLIKE(5, 6);
+extern void fatal_int( const char *file, const char *function, const unsigned long line, const char *fmt, ... ) NORETURN PRINTFLIKE(4, 5);
+extern void log_access( const char *fmt, ... ) PRINTFLIKE(1, 2);
 
 #endif /* NETDATA_LOG_H */

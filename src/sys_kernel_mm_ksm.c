@@ -19,7 +19,7 @@ KSM_NAME_VALUE values[] = {
         [PAGES_TO_SCAN] = { "/sys/kernel/mm/ksm/pages_to_scan", 0ULL },
 };
 
-int do_sys_kernel_mm_ksm(int update_every, unsigned long long dt) {
+int do_sys_kernel_mm_ksm(int update_every, usec_t dt) {
     static procfile *ff_pages_shared = NULL, *ff_pages_sharing = NULL, *ff_pages_unshared = NULL, *ff_pages_volatile = NULL, *ff_pages_to_scan = NULL;
     static long page_size = -1;
 
@@ -64,23 +64,23 @@ int do_sys_kernel_mm_ksm(int update_every, unsigned long long dt) {
 
     ff_pages_shared = procfile_readall(ff_pages_shared);
     if(!ff_pages_shared) return 0; // we return 0, so that we will retry to open it next time
-    pages_shared = strtoull(procfile_lineword(ff_pages_shared, 0, 0), NULL, 10);
+    pages_shared = str2ull(procfile_lineword(ff_pages_shared, 0, 0));
 
     ff_pages_sharing = procfile_readall(ff_pages_sharing);
     if(!ff_pages_sharing) return 0; // we return 0, so that we will retry to open it next time
-    pages_sharing = strtoull(procfile_lineword(ff_pages_sharing, 0, 0), NULL, 10);
+    pages_sharing = str2ull(procfile_lineword(ff_pages_sharing, 0, 0));
 
     ff_pages_unshared = procfile_readall(ff_pages_unshared);
     if(!ff_pages_unshared) return 0; // we return 0, so that we will retry to open it next time
-    pages_unshared = strtoull(procfile_lineword(ff_pages_unshared, 0, 0), NULL, 10);
+    pages_unshared = str2ull(procfile_lineword(ff_pages_unshared, 0, 0));
 
     ff_pages_volatile = procfile_readall(ff_pages_volatile);
     if(!ff_pages_volatile) return 0; // we return 0, so that we will retry to open it next time
-    pages_volatile = strtoull(procfile_lineword(ff_pages_volatile, 0, 0), NULL, 10);
+    pages_volatile = str2ull(procfile_lineword(ff_pages_volatile, 0, 0));
 
     ff_pages_to_scan = procfile_readall(ff_pages_to_scan);
     if(!ff_pages_to_scan) return 0; // we return 0, so that we will retry to open it next time
-    pages_to_scan = strtoull(procfile_lineword(ff_pages_to_scan, 0, 0), NULL, 10);
+    pages_to_scan = str2ull(procfile_lineword(ff_pages_to_scan, 0, 0));
 
     offered = pages_sharing + pages_shared + pages_unshared + pages_volatile;
     saved = pages_sharing - pages_shared;

@@ -6,10 +6,6 @@
 #define DISK_TYPE_PARTITION 2
 #define DISK_TYPE_CONTAINER 3
 
-#ifndef NETDATA_RELOAD_MOUNTINFO_EVERY
-#define NETDATA_RELOAD_MOUNTINFO_EVERY 10
-#endif
-
 static struct disk {
     char *disk;             // the name of the disk (sda, sdb, etc)
     unsigned long major;
@@ -18,7 +14,6 @@ static struct disk {
     int type;
 
     char *mount_point;
-    uint32_t mount_point_hash;
 
     // disk options caching
     int configured;
@@ -29,255 +24,16 @@ static struct disk {
     int do_qops;
     int do_util;
     int do_backlog;
-    int do_space;
-    int do_inodes;
 
     struct disk *next;
 } *disk_root = NULL;
-
-static struct mountinfo *disk_mountinfo_root = NULL;
-
-static inline void mountinfo_reload(int force) {
-    static time_t last_loaded = 0;
-    time_t now = time(NULL);
-
-    if(force || now - last_loaded >= NETDATA_RELOAD_MOUNTINFO_EVERY) {
-//#ifdef NETDATA_INTERNAL_CHECKS
-//        info("Reloading mountinfo");
-//#endif
-
-        // mountinfo_free() can be called with NULL disk_mountinfo_root
-        mountinfo_free(disk_mountinfo_root);
-
-        // re-read mountinfo in case something changed
-        disk_mountinfo_root = mountinfo_read();
-
-        last_loaded = now;
-    }
-}
-
-
-// linked list of mount points that are by default disabled
-static struct excluded_mount_point {
-    const char *prefix;
-    size_t len;
-    struct excluded_mount_point *next;
-} *excluded_mount_points = NULL;
-
-static inline int is_mount_point_excluded(const char *mount_point) {
-    static int initialized = 0;
-
-    if(unlikely(!initialized)) {
-        initialized = 1;
-
-        char *a = config_get("plugin:proc:/proc/diskstats", "exclude space metrics on paths", "/var/run/user/ /run/user/");
-        if(a && *a) {
-            char *s = a;
-
-            while(s && *s) {
-                // skip all spaces
-                while(isspace(*s)) s++;
-
-                // empty string
-                if(unlikely(!*s)) break;
-
-                // find the next space
-                char *c = s;
-                while(*c && !isspace(*c)) c++;
-
-                char *n;
-                if(likely(*c)) n = c + 1;
-                else n = NULL;
-
-                // terminate our string
-                *c = '\0';
-
-                // allocate the structure
-                struct excluded_mount_point *m = mallocz(sizeof(struct excluded_mount_point));
-                m->prefix = strdup(s);
-                m->len = strlen(m->prefix);
-                m->next = excluded_mount_points;
-                excluded_mount_points = m;
-
-                // prepare for next loop
-                s = n;
-                if(likely(n)) *c = ' ';
-            }
-        }
-    }
-
-    size_t len = strlen(mount_point);
-    struct excluded_mount_point *m;
-    for(m = excluded_mount_points; m ; m = m->next) {
-        if(m->len <= len) {
-            // fprintf(stderr, "SPACE: comparing '%s' with '%s'\n", mount_point, m->prefix);
-            if(unlikely(strncmp(m->prefix, mount_point, m->len) == 0)) {
-                // fprintf(stderr, "SPACE: excluded '%s'\n", mount_point);
-                return 1;
-            }
-        }
-    }
-
-    // fprintf(stderr, "SPACE: included '%s'\n", mount_point);
-    return 0;
-}
-
-// Data to be stored in DICTIONARY mount_points used by do_disk_space_stats().
-// This DICTIONARY is used to lookup the settings of the mount point on each iteration.
-struct mount_point_metadata {
-    int do_space;
-    int do_inodes;
-};
-
-static inline void do_disk_space_stats(struct disk *d, const char *mount_point, const char *mount_source, const char *disk, const char *family, int update_every, unsigned long long dt) {
-    (void)dt;
-
-    static DICTIONARY *mount_points = NULL;
-    int do_space, do_inodes;
-
-    if(unlikely(!mount_points)) {
-        mount_points = dictionary_create(DICTIONARY_FLAG_SINGLE_THREADED);
-    }
-
-    if(unlikely(d)) {
-        // verify we collected the metrics for the right disk.
-        // if not the mountpoint has changed.
-
-        struct stat buff_stat;
-        if(unlikely(stat(mount_point, &buff_stat) == -1)) {
-            error("Failed to stat() for '%s' (disk '%s')", mount_point, disk);
-            return;
-        }
-        else if(unlikely(major(buff_stat.st_dev) != d->major || minor(buff_stat.st_dev) != d->minor)) {
-            error("Disk '%s' (disk '%s') switched major:minor", mount_point, disk);
-            freez(d->mount_point);
-            d->mount_point = NULL;
-            d->mount_point_hash = 0;
-            return;
-        }
-
-        do_space = d->do_space;
-        do_inodes = d->do_inodes;
-    }
-    else {
-        struct mount_point_metadata *m = dictionary_get(mount_points, mount_point);
-        if(unlikely(!m)) {
-            char var_name[4096 + 1];
-            snprintfz(var_name, 4096, "plugin:proc:/proc/diskstats:%s", mount_point);
-
-            int def_space = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "space usage for all disks", CONFIG_ONDEMAND_ONDEMAND);
-            int def_inodes = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "inodes usage for all disks", CONFIG_ONDEMAND_ONDEMAND);
-
-            if(unlikely(is_mount_point_excluded(mount_point))) {
-                def_space = CONFIG_ONDEMAND_NO;
-                def_inodes = CONFIG_ONDEMAND_NO;
-            }
-
-            do_space = config_get_boolean_ondemand(var_name, "space usage", def_space);
-            do_inodes = config_get_boolean_ondemand(var_name, "inodes usage", def_inodes);
-
-            struct mount_point_metadata mp = {
-                .do_space = do_space,
-                .do_inodes = do_inodes
-            };
-
-            dictionary_set(mount_points, mount_point, &mp, sizeof(struct mount_point_metadata));
-        }
-        else {
-            do_space = m->do_space;
-            do_inodes = m->do_inodes;
-        }
-    }
-
-    if(unlikely(do_space == CONFIG_ONDEMAND_NO && do_inodes == CONFIG_ONDEMAND_NO))
-        return;
-
-    struct statvfs buff_statvfs;
-    if (statvfs(mount_point, &buff_statvfs) < 0) {
-        error("Failed statvfs() for '%s' (disk '%s')", mount_point, disk);
-        return;
-    }
-
-    // taken from get_fs_usage() found in coreutils
-    unsigned long bsize = (buff_statvfs.f_frsize) ? buff_statvfs.f_frsize : buff_statvfs.f_bsize;
-
-    fsblkcnt_t bavail         = buff_statvfs.f_bavail;
-    fsblkcnt_t btotal         = buff_statvfs.f_blocks;
-    fsblkcnt_t bavail_root    = buff_statvfs.f_bfree;
-    fsblkcnt_t breserved_root = bavail_root - bavail;
-    fsblkcnt_t bused;
-    if(likely(btotal >= bavail_root))
-        bused = btotal - bavail_root;
-    else
-        bused = bavail_root - btotal;
-
-#ifdef NETDATA_INTERNAL_CHECKS
-    if(unlikely(btotal != bavail + breserved_root + bused))
-        error("Disk block statistics for '%s' (disk '%s') do not sum up: total = %llu, available = %llu, reserved = %llu, used = %llu", mount_point, disk, (unsigned long long)btotal, (unsigned long long)bavail, (unsigned long long)breserved_root, (unsigned long long)bused);
-#endif
-
-    // --------------------------------------------------------------------------
-
-    fsfilcnt_t favail         = buff_statvfs.f_favail;
-    fsfilcnt_t ftotal         = buff_statvfs.f_files;
-    fsfilcnt_t favail_root    = buff_statvfs.f_ffree;
-    fsfilcnt_t freserved_root = favail_root - favail;
-    fsfilcnt_t fused          = ftotal - favail_root;
-
-#ifdef NETDATA_INTERNAL_CHECKS
-    if(unlikely(btotal != bavail + breserved_root + bused))
-        error("Disk inode statistics for '%s' (disk '%s') do not sum up: total = %llu, available = %llu, reserved = %llu, used = %llu", mount_point, disk, (unsigned long long)ftotal, (unsigned long long)favail, (unsigned long long)freserved_root, (unsigned long long)fused);
-#endif
-
-    // --------------------------------------------------------------------------
-
-    RRDSET *st;
-
-    if(do_space == CONFIG_ONDEMAND_YES || (do_space == CONFIG_ONDEMAND_ONDEMAND && (bavail || breserved_root || bused))) {
-        st = rrdset_find_bytype("disk_space", disk);
-        if(unlikely(!st)) {
-            char title[4096 + 1];
-            snprintfz(title, 4096, "Disk Space Usage for %s [%s]", family, mount_source);
-            st = rrdset_create("disk_space", disk, NULL, family, "disk.space", title, "GB", 2023, update_every, RRDSET_TYPE_STACKED);
-
-            rrddim_add(st, "avail", NULL, bsize, 1024*1024*1024, RRDDIM_ABSOLUTE);
-            rrddim_add(st, "used" , NULL, bsize, 1024*1024*1024, RRDDIM_ABSOLUTE);
-            rrddim_add(st, "reserved_for_root", "reserved for root", bsize, 1024*1024*1024, RRDDIM_ABSOLUTE);
-        }
-        else rrdset_next(st);
-
-        rrddim_set(st, "avail", bavail);
-        rrddim_set(st, "used", bused);
-        rrddim_set(st, "reserved_for_root", breserved_root);
-        rrdset_done(st);
-    }
-
-    // --------------------------------------------------------------------------
-
-    if(do_inodes == CONFIG_ONDEMAND_YES || (do_inodes == CONFIG_ONDEMAND_ONDEMAND && (favail || freserved_root || fused))) {
-        st = rrdset_find_bytype("disk_inodes", disk);
-        if(unlikely(!st)) {
-            char title[4096 + 1];
-            snprintfz(title, 4096, "Disk Files (inodes) Usage for %s [%s]", family, mount_source);
-            st = rrdset_create("disk_inodes", disk, NULL, family, "disk.inodes", title, "Inodes", 2024, update_every, RRDSET_TYPE_STACKED);
-
-            rrddim_add(st, "avail", NULL, 1, 1, RRDDIM_ABSOLUTE);
-            rrddim_add(st, "used" , NULL, 1, 1, RRDDIM_ABSOLUTE);
-            rrddim_add(st, "reserved_for_root", "reserved for root", 1, 1, RRDDIM_ABSOLUTE);
-        }
-        else rrdset_next(st);
-
-        rrddim_set(st, "avail", favail);
-        rrddim_set(st, "used", fused);
-        rrddim_set(st, "reserved_for_root", freserved_root);
-        rrdset_done(st);
-    }
-}
 
 static struct disk *get_disk(unsigned long major, unsigned long minor, char *disk) {
     static char path_to_get_hw_sector_size[FILENAME_MAX + 1] = "";
     static char path_to_get_hw_sector_size_partitions[FILENAME_MAX + 1] = "";
     static char path_find_block_device[FILENAME_MAX + 1] = "";
+    static struct mountinfo *disk_mountinfo_root = NULL;
+
     struct disk *d;
 
     // search for it in our RAM list.
@@ -286,11 +42,7 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
     // should not be that many, it should be acceptable
     for(d = disk_root; d ; d = d->next)
         if(unlikely(d->major == major && d->minor == minor))
-            break;
-
-    // if we found it, return it
-    if(likely(d))
-        return d;
+            return d;
 
     // not found
     // create a new disk structure
@@ -358,21 +110,17 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
 
     // mountinfo_find() can be called with NULL disk_mountinfo_root
     struct mountinfo *mi = mountinfo_find(disk_mountinfo_root, d->major, d->minor);
-/*    if(unlikely(!mi)) {
-        mountinfo_reload(1);
-
-        // search again for this disk
+    if(unlikely(!mi)) {
+        // mountinfo_free can be called with NULL
+        mountinfo_free(disk_mountinfo_root);
+        disk_mountinfo_root = mountinfo_read(0);
         mi = mountinfo_find(disk_mountinfo_root, d->major, d->minor);
     }
-*/
-    if(unlikely(mi)) {
+
+    if(unlikely(mi))
         d->mount_point = strdupz(mi->mount_point);
-        d->mount_point_hash = mi->mount_point_hash;
-    }
-    else {
+    else
         d->mount_point = NULL;
-        d->mount_point_hash = 0;
-    }
 
     // ------------------------------------------------------------------------
     // find the disk sector size
@@ -405,7 +153,7 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
             char *tmp = fgets(buffer2, 1024, fpss);
 
             if(likely(tmp)) {
-                d->sector_size = atoi(tmp);
+                d->sector_size = str2i(tmp);
                 if(unlikely(d->sector_size <= 0)) {
                     error("Invalid sector size %d for device %s in %s. Assuming 512.", d->sector_size, d->disk, buffer);
                     d->sector_size = 512;
@@ -421,25 +169,41 @@ static struct disk *get_disk(unsigned long major, unsigned long minor, char *dis
     return d;
 }
 
-static inline int select_positive_option(int option1, int option2) {
-    if(unlikely(option1 == CONFIG_ONDEMAND_YES || option2 == CONFIG_ONDEMAND_YES))
-        return CONFIG_ONDEMAND_YES;
-    else if(unlikely(option1 == CONFIG_ONDEMAND_ONDEMAND || option2 == CONFIG_ONDEMAND_ONDEMAND))
-        return CONFIG_ONDEMAND_ONDEMAND;
+static inline int is_major_enabled(int major) {
+    static char *major_configs = NULL;
+    static size_t major_size = 0;
 
-    return CONFIG_ONDEMAND_NO;
+    if(major < 0) return 1;
+
+    size_t wanted_size = (size_t)major + 1;
+
+    if(major_size < wanted_size) {
+        major_configs = reallocz(major_configs, wanted_size);
+
+        size_t i;
+        for(i = major_size; i < wanted_size ; i++)
+            major_configs[i] = -1;
+
+        major_size = wanted_size;
+    }
+
+    if(major_configs[major] == -1) {
+        char buffer[CONFIG_MAX_NAME + 1];
+        snprintfz(buffer, CONFIG_MAX_NAME, "performance metrics for disks with major %d", major);
+        major_configs[major] = (char)config_get_boolean("plugin:proc:/proc/diskstats", buffer, 1);
+    }
+
+    return major_configs[major];
 }
 
-int do_proc_diskstats(int update_every, unsigned long long dt) {
+int do_proc_diskstats(int update_every, usec_t dt) {
     (void)dt;
 
     static procfile *ff = NULL;
     static int  global_enable_new_disks_detected_at_runtime = CONFIG_ONDEMAND_YES,
                 global_enable_performance_for_physical_disks = CONFIG_ONDEMAND_ONDEMAND,
-                global_enable_performance_for_virtual_disks = CONFIG_ONDEMAND_NO,
+                global_enable_performance_for_virtual_disks = CONFIG_ONDEMAND_ONDEMAND,
                 global_enable_performance_for_partitions = CONFIG_ONDEMAND_NO,
-                global_enable_performance_for_mountpoints = CONFIG_ONDEMAND_NO,
-                global_enable_performance_for_virtual_mountpoints = CONFIG_ONDEMAND_ONDEMAND,
                 global_do_io = CONFIG_ONDEMAND_ONDEMAND,
                 global_do_ops = CONFIG_ONDEMAND_ONDEMAND,
                 global_do_mops = CONFIG_ONDEMAND_ONDEMAND,
@@ -455,8 +219,6 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
         global_enable_performance_for_physical_disks = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for physical disks", global_enable_performance_for_physical_disks);
         global_enable_performance_for_virtual_disks = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for virtual disks", global_enable_performance_for_virtual_disks);
         global_enable_performance_for_partitions = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for partitions", global_enable_performance_for_partitions);
-        global_enable_performance_for_mountpoints = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for mounted filesystems", global_enable_performance_for_mountpoints);
-        global_enable_performance_for_virtual_mountpoints = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "performance metrics for mounted virtual disks", global_enable_performance_for_virtual_mountpoints);
 
         global_do_io      = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "bandwidth for all disks", global_do_io);
         global_do_ops     = config_get_boolean_ondemand("plugin:proc:/proc/diskstats", "operations for all disks", global_do_ops);
@@ -469,20 +231,19 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
         globals_initialized = 1;
     }
 
+    // --------------------------------------------------------------------------
+
     if(unlikely(!ff)) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s%s", global_host_prefix, "/proc/diskstats");
         ff = procfile_open(config_get("plugin:proc:/proc/diskstats", "filename to monitor", filename), " \t", PROCFILE_FLAG_DEFAULT);
     }
-    if(unlikely(!ff)) return 1;
+    if(unlikely(!ff)) return 0;
 
     ff = procfile_readall(ff);
     if(unlikely(!ff)) return 0; // we return 0, so that we will retry to open it next time
 
-    uint32_t lines = procfile_lines(ff), l;
-
-    // this is smart enough not to reload it every time
-    mountinfo_reload(0);
+    size_t lines = procfile_lines(ff), l;
 
     for(l = 0; l < lines ;l++) {
         // --------------------------------------------------------------------------
@@ -499,44 +260,44 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
                             last_writes = 0, last_writesectors = 0, last_writems = 0,
                             last_busy_ms = 0;
 
-        uint32_t words = procfile_linewords(ff, l);
+        size_t words = procfile_linewords(ff, l);
         if(unlikely(words < 14)) continue;
 
-        major           = strtoul(procfile_lineword(ff, l, 0), NULL, 10);
-        minor           = strtoul(procfile_lineword(ff, l, 1), NULL, 10);
+        major           = str2ul(procfile_lineword(ff, l, 0));
+        minor           = str2ul(procfile_lineword(ff, l, 1));
         disk            = procfile_lineword(ff, l, 2);
 
         // # of reads completed # of writes completed
         // This is the total number of reads or writes completed successfully.
-        reads           = strtoull(procfile_lineword(ff, l, 3), NULL, 10);  // rd_ios
-        writes          = strtoull(procfile_lineword(ff, l, 7), NULL, 10);  // wr_ios
+        reads           = str2ull(procfile_lineword(ff, l, 3));  // rd_ios
+        writes          = str2ull(procfile_lineword(ff, l, 7));  // wr_ios
 
         // # of reads merged # of writes merged
         // Reads and writes which are adjacent to each other may be merged for
         // efficiency.  Thus two 4K reads may become one 8K read before it is
         // ultimately handed to the disk, and so it will be counted (and queued)
-        mreads          = strtoull(procfile_lineword(ff, l, 4), NULL, 10);  // rd_merges_or_rd_sec
-        mwrites         = strtoull(procfile_lineword(ff, l, 8), NULL, 10);  // wr_merges
+        mreads          = str2ull(procfile_lineword(ff, l, 4));  // rd_merges_or_rd_sec
+        mwrites         = str2ull(procfile_lineword(ff, l, 8));  // wr_merges
 
         // # of sectors read # of sectors written
         // This is the total number of sectors read or written successfully.
-        readsectors     = strtoull(procfile_lineword(ff, l, 5), NULL, 10);  // rd_sec_or_wr_ios
-        writesectors    = strtoull(procfile_lineword(ff, l, 9), NULL, 10);  // wr_sec
+        readsectors     = str2ull(procfile_lineword(ff, l, 5));  // rd_sec_or_wr_ios
+        writesectors    = str2ull(procfile_lineword(ff, l, 9));  // wr_sec
 
         // # of milliseconds spent reading # of milliseconds spent writing
         // This is the total number of milliseconds spent by all reads or writes (as
         // measured from __make_request() to end_that_request_last()).
-        readms          = strtoull(procfile_lineword(ff, l, 6), NULL, 10);  // rd_ticks_or_wr_sec
-        writems         = strtoull(procfile_lineword(ff, l, 10), NULL, 10); // wr_ticks
+        readms          = str2ull(procfile_lineword(ff, l, 6));  // rd_ticks_or_wr_sec
+        writems         = str2ull(procfile_lineword(ff, l, 10)); // wr_ticks
 
         // # of I/Os currently in progress
         // The only field that should go to zero. Incremented as requests are
         // given to appropriate struct request_queue and decremented as they finish.
-        queued_ios      = strtoull(procfile_lineword(ff, l, 11), NULL, 10); // ios_pgr
+        queued_ios      = str2ull(procfile_lineword(ff, l, 11)); // ios_pgr
 
         // # of milliseconds spent doing I/Os
         // This field increases so long as field queued_ios is nonzero.
-        busy_ms         = strtoull(procfile_lineword(ff, l, 12), NULL, 10); // tot_ticks
+        busy_ms         = str2ull(procfile_lineword(ff, l, 12)); // tot_ticks
 
         // weighted # of milliseconds spent doing I/Os
         // This field is incremented at each I/O start, I/O completion, I/O
@@ -544,7 +305,7 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
         // (field queued_ios) times the number of milliseconds spent doing I/O since the
         // last update of this field.  This can provide an easy measure of both
         // I/O completion time and the backlog that may be accumulating.
-        backlog_ms      = strtoull(procfile_lineword(ff, l, 13), NULL, 10); // rq_ticks
+        backlog_ms      = str2ull(procfile_lineword(ff, l, 13)); // rq_ticks
 
 
         // --------------------------------------------------------------------------
@@ -583,15 +344,12 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
                 d->do_qops = CONFIG_ONDEMAND_NO;
                 d->do_util = CONFIG_ONDEMAND_NO;
                 d->do_backlog = CONFIG_ONDEMAND_NO;
-                d->do_space = CONFIG_ONDEMAND_NO;
-                d->do_inodes = CONFIG_ONDEMAND_NO;
             }
             else {
                 // this disk is enabled
                 // check its direct settings
 
                 int def_performance = CONFIG_ONDEMAND_ONDEMAND;
-                int def_space = (d->mount_point)?CONFIG_ONDEMAND_ONDEMAND:CONFIG_ONDEMAND_NO;
 
                 // since this is 'on demand' we can figure the performance settings
                 // based on the type of disk
@@ -607,14 +365,12 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
 
                     case DISK_TYPE_CONTAINER:
                         def_performance = global_enable_performance_for_virtual_disks;
-
-                        if(d->mount_point)
-                            def_performance = select_positive_option(def_performance, global_enable_performance_for_virtual_mountpoints);
                         break;
                 }
 
-                if(d->mount_point)
-                    def_performance = select_positive_option(def_performance, global_enable_performance_for_mountpoints);
+                // check if we have to disable performance for this disk
+                if(def_performance)
+                    def_performance = is_major_enabled((int)major);
 
                 // ------------------------------------------------------------
                 // now we have def_performance and def_space
@@ -650,23 +406,6 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
                 d->do_qops    = config_get_boolean_ondemand(var_name, "queued operations", ddo_qops);
                 d->do_util    = config_get_boolean_ondemand(var_name, "utilization percentage", ddo_util);
                 d->do_backlog = config_get_boolean_ondemand(var_name, "backlog", ddo_backlog);
-
-                // def_space
-                if(unlikely(d->mount_point)) {
-                    // check the user configuration (this will also show our 'on demand' decision)
-                    def_space = config_get_boolean_ondemand(var_name, "enable space metrics", def_space);
-
-                    int ddo_space = def_space,
-                        ddo_inodes = def_space;
-
-                    d->do_space = config_get_boolean_ondemand(var_name, "space usage", ddo_space);
-                    d->do_inodes = config_get_boolean_ondemand(var_name, "inodes usage", ddo_inodes);
-                }
-                else {
-                    // don't show settings for this disk
-                    d->do_space = CONFIG_ONDEMAND_NO;
-                    d->do_inodes = CONFIG_ONDEMAND_NO;
-                }
             }
 
             d->configured = 1;
@@ -862,43 +601,6 @@ int do_proc_diskstats(int update_every, unsigned long long dt) {
                 rrdset_done(st);
             }
         }
-
-/*
-        // --------------------------------------------------------------------------
-        // space metrics
-
-        if(unlikely( d->mount_point && (d->do_space || d->do_inodes) )) {
-            do_disk_space_stats(d, d->mount_point, disk, disk, family, update_every, dt);
-        }
-*/
-    }
-
-    // --------------------------------------------------------------------------
-    // space metrics for non-block devices
-
-    struct mountinfo *mi;
-    for(mi = disk_mountinfo_root; mi ;mi = mi->next) {
-        if(unlikely(mi->flags & (MOUNTINFO_IS_DUMMY|MOUNTINFO_IS_BIND|MOUNTINFO_IS_SAME_DEV|MOUNTINFO_NO_STAT|MOUNTINFO_NO_SIZE)))
-            continue;
-
-/*
-        // skip the ones with block devices
-        int skip = 0;
-        struct disk *d;
-        for(d = disk_root; d ;d = d->next) {
-            if(unlikely(d->mount_point && mi->mount_point_hash == d->mount_point_hash && strcmp(mi->mount_point, d->mount_point))) {
-                skip = 1;
-                break;
-            }
-        }
-
-        if(unlikely(skip))
-            continue;
-
-        // fprintf(stderr, "Will process mount point '%s', source '%s', filesystem '%s'\n", mi->mount_point, mi->mount_source, mi->filesystem);
-*/
-
-        do_disk_space_stats(NULL, mi->mount_point, mi->mount_source, mi->persistent_id, mi->mount_point , update_every, dt);
     }
 
     return 0;

@@ -13,6 +13,8 @@
 // etc.
 #define RATES_DETAIL 10000ULL
 
+#define MAX_SPARE_FDS 1
+
 int debug = 0;
 
 int update_every = 1;
@@ -86,7 +88,9 @@ struct target {
     unsigned long long io_storage_bytes_written;
     // unsigned long long io_cancelled_write_bytes;
 
-    int *fds;
+    int *target_fds;
+    int target_fds_size;
+
     unsigned long long openfiles;
     unsigned long long openpipes;
     unsigned long long opensockets;
@@ -121,7 +125,7 @@ long apps_groups_targets = 0;
 struct target *users_root_target = NULL;
 struct target *groups_root_target = NULL;
 
-struct target *get_users_target(uid_t uid)
+static struct target *get_users_target(uid_t uid)
 {
     struct target *w;
     for(w = users_root_target ; w ; w = w->next)
@@ -189,10 +193,11 @@ struct target *get_groups_target(gid_t gid)
 
 // find or create a new target
 // there are targets that are just aggregated to other target (the second argument)
-struct target *get_apps_groups_target(const char *id, struct target *target) {
-    int tdebug = 0, thidden = 0, ends_with = 0;
+static struct target *get_apps_groups_target(const char *id, struct target *target, const char *name) {
+    int tdebug = 0, thidden = target?target->hidden:0, ends_with = 0;
     const char *nid = id;
 
+    // extract the options
     while(nid[0] == '-' || nid[0] == '+' || nid[0] == '*') {
         if(nid[0] == '-') thidden = 1;
         if(nid[0] == '+') tdebug = 1;
@@ -201,6 +206,7 @@ struct target *get_apps_groups_target(const char *id, struct target *target) {
     }
     uint32_t hash = simple_hash(id);
 
+    // find if it already exists
     struct target *w, *last = apps_groups_root_target;
     for(w = apps_groups_root_target ; w ; w = w->next) {
         if(w->idhash == hash && strncmp(nid, w->id, MAX_NAME) == 0)
@@ -209,11 +215,37 @@ struct target *get_apps_groups_target(const char *id, struct target *target) {
         last = w;
     }
 
+    // find an existing target
+    if(unlikely(!target)) {
+        while(*name == '-') {
+            if(*name == '-') thidden = 1;
+            name++;
+        }
+        for(target = apps_groups_root_target ; target ; target = target->next) {
+            if(!target->target && strcmp(name, target->name) == 0)
+                break;
+        }
+        if(unlikely(debug)) {
+            if(unlikely(target))
+                fprintf(stderr, "apps.plugin: REUSING TARGET NAME '%s' on ID '%s'\n", target->name, target->id);
+            else
+                fprintf(stderr, "apps.plugin: NEW TARGET NAME '%s' on ID '%s'\n", name, id);
+        }
+    }
+
+    if(target && target->target)
+        fatal("Internal Error: request to link process '%s' to target '%s' which is linked to target '%s'", id, target->id, target->target->id);
+
     w = callocz(sizeof(struct target), 1);
     strncpyz(w->id, nid, MAX_NAME);
     w->idhash = simple_hash(w->id);
 
-    strncpyz(w->name, nid, MAX_NAME);
+    if(unlikely(!target))
+        // copy the name
+        strncpyz(w->name, name, MAX_NAME);
+    else
+        // copy the id
+        strncpyz(w->name, nid, MAX_NAME);
 
     strncpyz(w->compare, nid, MAX_COMPARE_NAME);
     size_t len = strlen(w->compare);
@@ -241,7 +273,7 @@ struct target *get_apps_groups_target(const char *id, struct target *target) {
         fprintf(stderr, "apps.plugin: ADDING TARGET ID '%s', process name '%s' (%s), aggregated on target '%s', options: %s %s\n"
                 , w->id
                 , w->compare, (w->starts_with && w->ends_with)?"substring":((w->starts_with)?"prefix":((w->ends_with)?"suffix":"exact"))
-                , w->target?w->target->id:w->id
+                , w->target?w->target->name:w->name
                 , (w->hidden)?"hidden":"-"
                 , (w->debug)?"debug":"-"
         );
@@ -250,11 +282,11 @@ struct target *get_apps_groups_target(const char *id, struct target *target) {
 }
 
 // read the apps_groups.conf file
-int read_apps_groups_conf(const char *name)
+static int read_apps_groups_conf(const char *file)
 {
     char filename[FILENAME_MAX + 1];
 
-    snprintfz(filename, FILENAME_MAX, "%s/apps_%s.conf", config_dir, name);
+    snprintfz(filename, FILENAME_MAX, "%s/apps_%s.conf", config_dir, file);
 
     if(unlikely(debug))
         fprintf(stderr, "apps.plugin: process groups file: '%s'\n", filename);
@@ -274,59 +306,45 @@ int read_apps_groups_conf(const char *name)
 
     for(line = 0; line < lines ;line++) {
         unsigned long word, words = procfile_linewords(ff, line);
+        if(!words) continue;
+
+        char *name = procfile_lineword(ff, line, 0);
+        if(!name || !*name) continue;
+
+        // find a possibly existing target
         struct target *w = NULL;
 
-        char *t = procfile_lineword(ff, line, 0);
-        if(!t || !*t) continue;
-
+        // loop through all words, skipping the first one (the name)
         for(word = 0; word < words ;word++) {
             char *s = procfile_lineword(ff, line, word);
             if(!s || !*s) continue;
             if(*s == '#') break;
 
-            if(t == s) continue;
+            // is this the first word? skip it
+            if(s == name) continue;
 
-            struct target *n = get_apps_groups_target(s, w);
+            // add this target
+            struct target *n = get_apps_groups_target(s, w, name);
             if(!n) {
                 error("Cannot create target '%s' (line %lu, word %lu)", s, line, word);
                 continue;
             }
 
-            if(!w) w = n;
-        }
-
-        if(w) {
-            int tdebug = 0, thidden = 0;
-
-            while(t[0] == '-' || t[0] == '+') {
-                if(t[0] == '-') thidden = 1;
-                if(t[0] == '+') tdebug = 1;
-                t++;
-            }
-
-            strncpyz(w->name, t, MAX_NAME);
-            w->hidden = thidden;
-            w->debug = tdebug;
-
-            if(unlikely(debug))
-                fprintf(stderr, "apps.plugin: AGGREGATION TARGET NAME '%s' on ID '%s', process name '%s' (%s), aggregated on target '%s', options: %s %s\n"
-                        , w->name
-                        , w->id
-                        , w->compare, (w->starts_with && w->ends_with)?"substring":((w->starts_with)?"prefix":((w->ends_with)?"suffix":"exact"))
-                        , w->target?w->target->id:w->id
-                        , (w->hidden)?"hidden":"-"
-                        , (w->debug)?"debug":"-"
-                );
+            // just some optimization
+            // to avoid searching for a target for each process
+            if(!w) w = n->target?n->target:n;
         }
     }
 
     procfile_close(ff);
 
-    apps_groups_default_target = get_apps_groups_target("p+!o@w#e$i^r&7*5(-i)l-o_", NULL); // match nothing
+    apps_groups_default_target = get_apps_groups_target("p+!o@w#e$i^r&7*5(-i)l-o_", NULL, "other"); // match nothing
     if(!apps_groups_default_target)
-        error("Cannot create default target");
-    else
-        strncpyz(apps_groups_default_target->name, "other", MAX_NAME);
+        fatal("Cannot create default target");
+
+    // allow the user to override group 'other'
+    if(apps_groups_default_target->target)
+        apps_groups_default_target = apps_groups_default_target->target;
 
     return 0;
 }
@@ -469,15 +487,15 @@ struct pid_stat {
 
 long all_pids_count = 0;
 
-struct pid_stat *get_pid_entry(pid_t pid) {
+static inline struct pid_stat *get_pid_entry(pid_t pid) {
     if(all_pids[pid]) {
         all_pids[pid]->new_entry = 0;
         return all_pids[pid];
     }
 
     all_pids[pid] = callocz(sizeof(struct pid_stat), 1);
-    all_pids[pid]->fds = callocz(sizeof(int), 100);
-    all_pids[pid]->fds_size = 100;
+    all_pids[pid]->fds = callocz(sizeof(int), MAX_SPARE_FDS);
+    all_pids[pid]->fds_size = MAX_SPARE_FDS;
 
     if(root_of_pids) root_of_pids->prev = all_pids[pid];
     all_pids[pid]->next = root_of_pids;
@@ -491,7 +509,7 @@ struct pid_stat *get_pid_entry(pid_t pid) {
     return all_pids[pid];
 }
 
-void del_pid_entry(pid_t pid) {
+static inline void del_pid_entry(pid_t pid) {
     if(!all_pids[pid]) {
         error("attempted to free pid %d that is not allocated.", pid);
         return;
@@ -519,7 +537,7 @@ void del_pid_entry(pid_t pid) {
 // ----------------------------------------------------------------------------
 // update pids from proc
 
-int read_proc_pid_cmdline(struct pid_stat *p) {
+static inline int read_proc_pid_cmdline(struct pid_stat *p) {
 
     if(unlikely(!p->cmdline_filename)) {
         char filename[FILENAME_MAX + 1];
@@ -550,7 +568,7 @@ cleanup:
     return 0;
 }
 
-int read_proc_pid_ownership(struct pid_stat *p) {
+static inline int read_proc_pid_ownership(struct pid_stat *p) {
     if(unlikely(!p->stat_filename)) {
         error("pid %d does not have a stat_filename", p->pid);
         return 0;
@@ -571,7 +589,7 @@ int read_proc_pid_ownership(struct pid_stat *p) {
     return 1;
 }
 
-int read_proc_pid_stat(struct pid_stat *p) {
+static inline int read_proc_pid_stat(struct pid_stat *p) {
     static procfile *ff = NULL;
 
     if(unlikely(!p->stat_filename)) {
@@ -592,89 +610,89 @@ int read_proc_pid_stat(struct pid_stat *p) {
     if(unlikely(!ff)) goto cleanup;
 
     p->last_stat_collected_usec = p->stat_collected_usec;
-    p->stat_collected_usec = time_usec();
+    p->stat_collected_usec = now_realtime_usec();
     file_counter++;
 
-    // p->pid           = atol(procfile_lineword(ff, 0, 0+i));
+    // p->pid           = str2ul(procfile_lineword(ff, 0, 0+i));
 
     strncpyz(p->comm, procfile_lineword(ff, 0, 1), MAX_COMPARE_NAME);
 
     // p->state         = *(procfile_lineword(ff, 0, 2));
-    p->ppid             = (int32_t) atol(procfile_lineword(ff, 0, 3));
-    // p->pgrp          = atol(procfile_lineword(ff, 0, 4));
-    // p->session       = atol(procfile_lineword(ff, 0, 5));
-    // p->tty_nr        = atol(procfile_lineword(ff, 0, 6));
-    // p->tpgid         = atol(procfile_lineword(ff, 0, 7));
-    // p->flags         = strtoull(procfile_lineword(ff, 0, 8), NULL, 10);
+    p->ppid             = (int32_t)str2ul(procfile_lineword(ff, 0, 3));
+    // p->pgrp          = str2ul(procfile_lineword(ff, 0, 4));
+    // p->session       = str2ul(procfile_lineword(ff, 0, 5));
+    // p->tty_nr        = str2ul(procfile_lineword(ff, 0, 6));
+    // p->tpgid         = str2ul(procfile_lineword(ff, 0, 7));
+    // p->flags         = str2ull(procfile_lineword(ff, 0, 8));
 
     unsigned long long last;
 
     last = p->minflt_raw;
-    p->minflt_raw       = strtoull(procfile_lineword(ff, 0, 9), NULL, 10);
-    p->minflt = (p->minflt_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->minflt_raw       = str2ull(procfile_lineword(ff, 0, 9));
+    p->minflt = (p->minflt_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->cminflt_raw;
-    p->cminflt_raw      = strtoull(procfile_lineword(ff, 0, 10), NULL, 10);
-    p->cminflt = (p->cminflt_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->cminflt_raw      = str2ull(procfile_lineword(ff, 0, 10));
+    p->cminflt = (p->cminflt_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->majflt_raw;
-    p->majflt_raw       = strtoull(procfile_lineword(ff, 0, 11), NULL, 10);
-    p->majflt = (p->majflt_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->majflt_raw       = str2ull(procfile_lineword(ff, 0, 11));
+    p->majflt = (p->majflt_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->cmajflt_raw;
-    p->cmajflt_raw      = strtoull(procfile_lineword(ff, 0, 12), NULL, 10);
-    p->cmajflt = (p->cmajflt_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->cmajflt_raw      = str2ull(procfile_lineword(ff, 0, 12));
+    p->cmajflt = (p->cmajflt_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->utime_raw;
-    p->utime_raw        = strtoull(procfile_lineword(ff, 0, 13), NULL, 10);
-    p->utime = (p->utime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->utime_raw        = str2ull(procfile_lineword(ff, 0, 13));
+    p->utime = (p->utime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->stime_raw;
-    p->stime_raw        = strtoull(procfile_lineword(ff, 0, 14), NULL, 10);
-    p->stime = (p->stime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->stime_raw        = str2ull(procfile_lineword(ff, 0, 14));
+    p->stime = (p->stime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->cutime_raw;
-    p->cutime_raw       = strtoull(procfile_lineword(ff, 0, 15), NULL, 10);
-    p->cutime = (p->cutime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->cutime_raw       = str2ull(procfile_lineword(ff, 0, 15));
+    p->cutime = (p->cutime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
     last = p->cstime_raw;
-    p->cstime_raw       = strtoull(procfile_lineword(ff, 0, 16), NULL, 10);
-    p->cstime = (p->cstime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+    p->cstime_raw       = str2ull(procfile_lineword(ff, 0, 16));
+    p->cstime = (p->cstime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
-    // p->priority      = strtoull(procfile_lineword(ff, 0, 17), NULL, 10);
-    // p->nice          = strtoull(procfile_lineword(ff, 0, 18), NULL, 10);
-    p->num_threads      = (int32_t) atol(procfile_lineword(ff, 0, 19));
-    // p->itrealvalue   = strtoull(procfile_lineword(ff, 0, 20), NULL, 10);
-    // p->starttime     = strtoull(procfile_lineword(ff, 0, 21), NULL, 10);
-    // p->vsize         = strtoull(procfile_lineword(ff, 0, 22), NULL, 10);
-    // p->rss           = strtoull(procfile_lineword(ff, 0, 23), NULL, 10);
-    // p->rsslim        = strtoull(procfile_lineword(ff, 0, 24), NULL, 10);
-    // p->starcode      = strtoull(procfile_lineword(ff, 0, 25), NULL, 10);
-    // p->endcode       = strtoull(procfile_lineword(ff, 0, 26), NULL, 10);
-    // p->startstack    = strtoull(procfile_lineword(ff, 0, 27), NULL, 10);
-    // p->kstkesp       = strtoull(procfile_lineword(ff, 0, 28), NULL, 10);
-    // p->kstkeip       = strtoull(procfile_lineword(ff, 0, 29), NULL, 10);
-    // p->signal        = strtoull(procfile_lineword(ff, 0, 30), NULL, 10);
-    // p->blocked       = strtoull(procfile_lineword(ff, 0, 31), NULL, 10);
-    // p->sigignore     = strtoull(procfile_lineword(ff, 0, 32), NULL, 10);
-    // p->sigcatch      = strtoull(procfile_lineword(ff, 0, 33), NULL, 10);
-    // p->wchan         = strtoull(procfile_lineword(ff, 0, 34), NULL, 10);
-    // p->nswap         = strtoull(procfile_lineword(ff, 0, 35), NULL, 10);
-    // p->cnswap        = strtoull(procfile_lineword(ff, 0, 36), NULL, 10);
-    // p->exit_signal   = atol(procfile_lineword(ff, 0, 37));
-    // p->processor     = atol(procfile_lineword(ff, 0, 38));
-    // p->rt_priority   = strtoul(procfile_lineword(ff, 0, 39), NULL, 10);
-    // p->policy        = strtoul(procfile_lineword(ff, 0, 40), NULL, 10);
-    // p->delayacct_blkio_ticks = strtoull(procfile_lineword(ff, 0, 41), NULL, 10);
+    // p->priority      = str2ull(procfile_lineword(ff, 0, 17));
+    // p->nice          = str2ull(procfile_lineword(ff, 0, 18));
+    p->num_threads      = (int32_t)str2ul(procfile_lineword(ff, 0, 19));
+    // p->itrealvalue   = str2ull(procfile_lineword(ff, 0, 20));
+    // p->starttime     = str2ull(procfile_lineword(ff, 0, 21));
+    // p->vsize         = str2ull(procfile_lineword(ff, 0, 22));
+    // p->rss           = str2ull(procfile_lineword(ff, 0, 23));
+    // p->rsslim        = str2ull(procfile_lineword(ff, 0, 24));
+    // p->starcode      = str2ull(procfile_lineword(ff, 0, 25));
+    // p->endcode       = str2ull(procfile_lineword(ff, 0, 26));
+    // p->startstack    = str2ull(procfile_lineword(ff, 0, 27));
+    // p->kstkesp       = str2ull(procfile_lineword(ff, 0, 28));
+    // p->kstkeip       = str2ull(procfile_lineword(ff, 0, 29));
+    // p->signal        = str2ull(procfile_lineword(ff, 0, 30));
+    // p->blocked       = str2ull(procfile_lineword(ff, 0, 31));
+    // p->sigignore     = str2ull(procfile_lineword(ff, 0, 32));
+    // p->sigcatch      = str2ull(procfile_lineword(ff, 0, 33));
+    // p->wchan         = str2ull(procfile_lineword(ff, 0, 34));
+    // p->nswap         = str2ull(procfile_lineword(ff, 0, 35));
+    // p->cnswap        = str2ull(procfile_lineword(ff, 0, 36));
+    // p->exit_signal   = str2ul(procfile_lineword(ff, 0, 37));
+    // p->processor     = str2ul(procfile_lineword(ff, 0, 38));
+    // p->rt_priority   = str2ul(procfile_lineword(ff, 0, 39));
+    // p->policy        = str2ul(procfile_lineword(ff, 0, 40));
+    // p->delayacct_blkio_ticks = str2ull(procfile_lineword(ff, 0, 41));
 
     if(enable_guest_charts) {
         last = p->gtime_raw;
-        p->gtime_raw        = strtoull(procfile_lineword(ff, 0, 42), NULL, 10);
-        p->gtime = (p->gtime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+        p->gtime_raw        = str2ull(procfile_lineword(ff, 0, 42));
+        p->gtime = (p->gtime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
         last = p->cgtime_raw;
-        p->cgtime_raw       = strtoull(procfile_lineword(ff, 0, 43), NULL, 10);
-        p->cgtime = (p->cgtime_raw - last) * (1000000ULL * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
+        p->cgtime_raw       = str2ull(procfile_lineword(ff, 0, 43));
+        p->cgtime = (p->cgtime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->stat_collected_usec - p->last_stat_collected_usec);
 
         if (show_guest_time || p->gtime || p->cgtime) {
             p->utime -= (p->utime >= p->gtime) ? p->gtime : p->utime;
@@ -717,7 +735,7 @@ cleanup:
     return 0;
 }
 
-int read_proc_pid_statm(struct pid_stat *p) {
+static inline int read_proc_pid_statm(struct pid_stat *p) {
     static procfile *ff = NULL;
 
     if(unlikely(!p->statm_filename)) {
@@ -734,13 +752,13 @@ int read_proc_pid_statm(struct pid_stat *p) {
 
     file_counter++;
 
-    p->statm_size           = strtoull(procfile_lineword(ff, 0, 0), NULL, 10);
-    p->statm_resident       = strtoull(procfile_lineword(ff, 0, 1), NULL, 10);
-    p->statm_share          = strtoull(procfile_lineword(ff, 0, 2), NULL, 10);
-    // p->statm_text           = strtoull(procfile_lineword(ff, 0, 3), NULL, 10);
-    // p->statm_lib            = strtoull(procfile_lineword(ff, 0, 4), NULL, 10);
-    // p->statm_data           = strtoull(procfile_lineword(ff, 0, 5), NULL, 10);
-    // p->statm_dirty          = strtoull(procfile_lineword(ff, 0, 6), NULL, 10);
+    p->statm_size           = str2ull(procfile_lineword(ff, 0, 0));
+    p->statm_resident       = str2ull(procfile_lineword(ff, 0, 1));
+    p->statm_share          = str2ull(procfile_lineword(ff, 0, 2));
+    // p->statm_text           = str2ull(procfile_lineword(ff, 0, 3));
+    // p->statm_lib            = str2ull(procfile_lineword(ff, 0, 4));
+    // p->statm_data           = str2ull(procfile_lineword(ff, 0, 5));
+    // p->statm_dirty          = str2ull(procfile_lineword(ff, 0, 6));
 
     return 1;
 
@@ -755,7 +773,7 @@ cleanup:
     return 0;
 }
 
-int read_proc_pid_io(struct pid_stat *p) {
+static inline int read_proc_pid_io(struct pid_stat *p) {
     static procfile *ff = NULL;
 
     if(unlikely(!p->io_filename)) {
@@ -774,37 +792,37 @@ int read_proc_pid_io(struct pid_stat *p) {
     file_counter++;
 
     p->last_io_collected_usec = p->io_collected_usec;
-    p->io_collected_usec = time_usec();
+    p->io_collected_usec = now_realtime_usec();
 
     unsigned long long last;
 
     last = p->io_logical_bytes_read_raw;
-    p->io_logical_bytes_read_raw = strtoull(procfile_lineword(ff, 0, 1), NULL, 10);
-    p->io_logical_bytes_read = (p->io_logical_bytes_read_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    p->io_logical_bytes_read_raw = str2ull(procfile_lineword(ff, 0, 1));
+    p->io_logical_bytes_read = (p->io_logical_bytes_read_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     last = p->io_logical_bytes_written_raw;
-    p->io_logical_bytes_written_raw = strtoull(procfile_lineword(ff, 1, 1), NULL, 10);
-    p->io_logical_bytes_written = (p->io_logical_bytes_written_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    p->io_logical_bytes_written_raw = str2ull(procfile_lineword(ff, 1, 1));
+    p->io_logical_bytes_written = (p->io_logical_bytes_written_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     // last = p->io_read_calls_raw;
-    // p->io_read_calls_raw = strtoull(procfile_lineword(ff, 2, 1), NULL, 10);
-    // p->io_read_calls = (p->io_read_calls_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    // p->io_read_calls_raw = str2ull(procfile_lineword(ff, 2, 1));
+    // p->io_read_calls = (p->io_read_calls_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     // last = p->io_write_calls_raw;
-    // p->io_write_calls_raw = strtoull(procfile_lineword(ff, 3, 1), NULL, 10);
-    // p->io_write_calls = (p->io_write_calls_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    // p->io_write_calls_raw = str2ull(procfile_lineword(ff, 3, 1));
+    // p->io_write_calls = (p->io_write_calls_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     last = p->io_storage_bytes_read_raw;
-    p->io_storage_bytes_read_raw = strtoull(procfile_lineword(ff, 4, 1), NULL, 10);
-    p->io_storage_bytes_read = (p->io_storage_bytes_read_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    p->io_storage_bytes_read_raw = str2ull(procfile_lineword(ff, 4, 1));
+    p->io_storage_bytes_read = (p->io_storage_bytes_read_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     last = p->io_storage_bytes_written_raw;
-    p->io_storage_bytes_written_raw = strtoull(procfile_lineword(ff, 5, 1), NULL, 10);
-    p->io_storage_bytes_written = (p->io_storage_bytes_written_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    p->io_storage_bytes_written_raw = str2ull(procfile_lineword(ff, 5, 1));
+    p->io_storage_bytes_written = (p->io_storage_bytes_written_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     // last = p->io_cancelled_write_bytes_raw;
-    // p->io_cancelled_write_bytes_raw = strtoull(procfile_lineword(ff, 6, 1), NULL, 10);
-    // p->io_cancelled_write_bytes = (p->io_cancelled_write_bytes_raw - last) * (1000000ULL * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
+    // p->io_cancelled_write_bytes_raw = str2ull(procfile_lineword(ff, 6, 1));
+    // p->io_cancelled_write_bytes = (p->io_cancelled_write_bytes_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (p->io_collected_usec - p->last_io_collected_usec);
 
     if(unlikely(global_iterations_counter == 1)) {
         p->io_logical_bytes_read        = 0;
@@ -833,10 +851,11 @@ unsigned long long global_utime = 0;
 unsigned long long global_stime = 0;
 unsigned long long global_gtime = 0;
 
-int read_proc_stat() {
+static inline int read_proc_stat() {
     static char filename[FILENAME_MAX + 1] = "";
     static procfile *ff = NULL;
-    static unsigned long long utime_raw = 0, stime_raw = 0, gtime_raw = 0, gntime_raw = 0, ntime_raw = 0, collected_usec = 0, last_collected_usec = 0;
+    static unsigned long long utime_raw = 0, stime_raw = 0, gtime_raw = 0, gntime_raw = 0, ntime_raw = 0;
+    static usec_t collected_usec = 0, last_collected_usec = 0;
 
     if(unlikely(!ff)) {
         snprintfz(filename, FILENAME_MAX, "%s/proc/stat", global_host_prefix);
@@ -848,34 +867,34 @@ int read_proc_stat() {
     if(unlikely(!ff)) goto cleanup;
 
     last_collected_usec = collected_usec;
-    collected_usec = time_usec();
+    collected_usec = now_realtime_usec();
 
     file_counter++;
 
     unsigned long long last;
 
     last = utime_raw;
-    utime_raw = strtoull(procfile_lineword(ff, 0, 1), NULL, 10);
-    global_utime = (utime_raw - last) * (1000000ULL * RATES_DETAIL) / (collected_usec - last_collected_usec);
+    utime_raw = str2ull(procfile_lineword(ff, 0, 1));
+    global_utime = (utime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (collected_usec - last_collected_usec);
 
     // nice time, on user time
     last = ntime_raw;
-    ntime_raw = strtoull(procfile_lineword(ff, 0, 2), NULL, 10);
-    global_utime += (ntime_raw - last) * (1000000ULL * RATES_DETAIL) / (collected_usec - last_collected_usec);
+    ntime_raw = str2ull(procfile_lineword(ff, 0, 2));
+    global_utime += (ntime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (collected_usec - last_collected_usec);
 
     last = stime_raw;
-    stime_raw = strtoull(procfile_lineword(ff, 0, 3), NULL, 10);
-    global_stime = (stime_raw - last) * (1000000ULL * RATES_DETAIL) / (collected_usec - last_collected_usec);
+    stime_raw = str2ull(procfile_lineword(ff, 0, 3));
+    global_stime = (stime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (collected_usec - last_collected_usec);
 
     last = gtime_raw;
-    gtime_raw = strtoull(procfile_lineword(ff, 0, 10), NULL, 10);
-    global_gtime = (gtime_raw - last) * (1000000ULL * RATES_DETAIL) / (collected_usec - last_collected_usec);
+    gtime_raw = str2ull(procfile_lineword(ff, 0, 10));
+    global_gtime = (gtime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (collected_usec - last_collected_usec);
 
     if(enable_guest_charts) {
         // guest nice time, on guest time
         last = gntime_raw;
-        gntime_raw = strtoull(procfile_lineword(ff, 0, 11), NULL, 10);
-        global_gtime += (gntime_raw - last) * (1000000ULL * RATES_DETAIL) / (collected_usec - last_collected_usec);
+        gntime_raw = str2ull(procfile_lineword(ff, 0, 11));
+        global_gtime += (gntime_raw - last) * (USEC_PER_SEC * RATES_DETAIL) / (collected_usec - last_collected_usec);
 
         // remove guest time from user time
         global_utime -= (global_utime > global_gtime) ? global_gtime : global_utime;
@@ -968,7 +987,7 @@ static struct file_descriptor *file_descriptor_find(const char *name, uint32_t h
 #define FILETYPE_TIMERFD 7
 #define FILETYPE_SIGNALFD 8
 
-void file_descriptor_not_used(int id)
+static inline void file_descriptor_not_used(int id)
 {
     if(id > 0 && id < all_files_size) {
 
@@ -989,7 +1008,9 @@ void file_descriptor_not_used(int id)
                 if(unlikely(debug))
                     fprintf(stderr, "apps.plugin:   >> slot %d is empty.\n", id);
 
-                file_descriptor_remove(&all_files[id]);
+                if(unlikely(file_descriptor_remove(&all_files[id]) != (void *)&all_files[id]))
+                    error("INTERNAL ERROR: removal of unused fd from index, removed a different fd");
+
 #ifdef NETDATA_INTERNAL_CHECKS
                 all_files[id].magic = 0x00000000;
 #endif /* NETDATA_INTERNAL_CHECKS */
@@ -1002,69 +1023,60 @@ void file_descriptor_not_used(int id)
     else    error("Request to decrease counter of fd %d, which is outside the array size (1 to %d)", id, all_files_size);
 }
 
-int file_descriptor_find_or_add(const char *name)
-{
-    static int last_pos = 0;
-    uint32_t hash = simple_hash(name);
+static inline void all_files_grow() {
+    void *old = all_files;
+    int i;
 
+    // there is no empty slot
     if(unlikely(debug))
-        fprintf(stderr, "apps.plugin: adding or finding name '%s' with hash %u\n", name, hash);
+        fprintf(stderr, "apps.plugin: extending fd array to %d entries\n", all_files_size + FILE_DESCRIPTORS_INCREASE_STEP);
 
-    struct file_descriptor *fd = file_descriptor_find(name, hash);
-    if(fd) {
-        // found
+    all_files = reallocz(all_files, (all_files_size + FILE_DESCRIPTORS_INCREASE_STEP) * sizeof(struct file_descriptor));
+
+    // if the address changed, we have to rebuild the index
+    // since all pointers are now invalid
+
+    if(unlikely(old && old != (void *)all_files)) {
         if(unlikely(debug))
-            fprintf(stderr, "apps.plugin:   >> found on slot %d\n", fd->pos);
+            fprintf(stderr, "apps.plugin:   >> re-indexing.\n");
 
-        fd->count++;
-        return fd->pos;
-    }
-    // not found
-
-    // check we have enough memory to add it
-    if(!all_files || all_files_len == all_files_size) {
-        void *old = all_files;
-        int i;
-
-        // there is no empty slot
-        if(unlikely(debug))
-            fprintf(stderr, "apps.plugin: extending fd array to %d entries\n", all_files_size + FILE_DESCRIPTORS_INCREASE_STEP);
-
-        all_files = reallocz(all_files, (all_files_size + FILE_DESCRIPTORS_INCREASE_STEP) * sizeof(struct file_descriptor));
-
-        // if the address changed, we have to rebuild the index
-        // since all pointers are now invalid
-        if(old && old != (void *)all_files) {
-            if(unlikely(debug))
-                fprintf(stderr, "apps.plugin:   >> re-indexing.\n");
-
-            all_files_index.root = NULL;
-            for(i = 0; i < all_files_size; i++) {
-                if(!all_files[i].count) continue;
-                file_descriptor_add(&all_files[i]);
-            }
-
-            if(unlikely(debug))
-                fprintf(stderr, "apps.plugin:   >> re-indexing done.\n");
+        all_files_index.root = NULL;
+        for(i = 0; i < all_files_size; i++) {
+            if(!all_files[i].count) continue;
+            if(unlikely(file_descriptor_add(&all_files[i]) != (void *)&all_files[i]))
+                error("INTERNAL ERROR: duplicate indexing of fd during realloc.");
         }
 
-        for(i = all_files_size; i < (all_files_size + FILE_DESCRIPTORS_INCREASE_STEP); i++) {
-            all_files[i].count = 0;
-            all_files[i].name = NULL;
+        if(unlikely(debug))
+            fprintf(stderr, "apps.plugin:   >> re-indexing done.\n");
+    }
+
+    // initialize the newly added entries
+
+    for(i = all_files_size; i < (all_files_size + FILE_DESCRIPTORS_INCREASE_STEP); i++) {
+        all_files[i].count = 0;
+        all_files[i].name = NULL;
 #ifdef NETDATA_INTERNAL_CHECKS
-            all_files[i].magic = 0x00000000;
+        all_files[i].magic = 0x00000000;
 #endif /* NETDATA_INTERNAL_CHECKS */
-            all_files[i].pos = i;
-        }
-
-        if(!all_files_size) all_files_len = 1;
-        all_files_size += FILE_DESCRIPTORS_INCREASE_STEP;
+        all_files[i].pos = i;
     }
+
+    if(unlikely(!all_files_size)) all_files_len = 1;
+    all_files_size += FILE_DESCRIPTORS_INCREASE_STEP;
+}
+
+static inline int file_descriptor_set_on_empty_slot(const char *name, uint32_t hash, int type) {
+    // check we have enough memory to add it
+    if(!all_files || all_files_len == all_files_size)
+        all_files_grow();
 
     if(unlikely(debug))
         fprintf(stderr, "apps.plugin:   >> searching for empty slot.\n");
 
     // search for an empty slot
+
+    static int last_pos = 0;
     int i, c;
     for(i = 0, c = last_pos ; i < all_files_size ; i++, c++) {
         if(c >= all_files_size) c = 0;
@@ -1082,23 +1094,58 @@ int file_descriptor_find_or_add(const char *name)
             if(unlikely(debug))
                 fprintf(stderr, "apps.plugin:   >> %s fd position %d for %s (last name: %s)\n", all_files[c].name?"re-using":"using", c, name, all_files[c].name);
 
-            if(all_files[c].name) freez((void *)all_files[c].name);
+            freez((void *)all_files[c].name);
             all_files[c].name = NULL;
             last_pos = c;
             break;
         }
     }
+
+    all_files_len++;
+
     if(i == all_files_size) {
         fatal("We should find an empty slot, but there isn't any");
         exit(1);
     }
+    // else we have an empty slot in 'c'
 
     if(unlikely(debug))
         fprintf(stderr, "apps.plugin:   >> updating slot %d.\n", c);
 
-    all_files_len++;
+    all_files[c].name = strdupz(name);
+    all_files[c].hash = hash;
+    all_files[c].type = type;
+    all_files[c].pos  = c;
+    all_files[c].count = 1;
+#ifdef NETDATA_INTERNAL_CHECKS
+    all_files[c].magic = 0x0BADCAFE;
+#endif /* NETDATA_INTERNAL_CHECKS */
+    if(unlikely(file_descriptor_add(&all_files[c]) != (void *)&all_files[c]))
+        error("INTERNAL ERROR: duplicate indexing of fd.");
 
-    // else we have an empty slot in 'c'
+    if(unlikely(debug))
+        fprintf(stderr, "apps.plugin: using fd position %d (name: %s)\n", c, all_files[c].name);
+
+    return c;
+}
+
+static inline int file_descriptor_find_or_add(const char *name)
+{
+    uint32_t hash = simple_hash(name);
+
+    if(unlikely(debug))
+        fprintf(stderr, "apps.plugin: adding or finding name '%s' with hash %u\n", name, hash);
+
+    struct file_descriptor *fd = file_descriptor_find(name, hash);
+    if(fd) {
+        // found
+        if(unlikely(debug))
+            fprintf(stderr, "apps.plugin:   >> found on slot %d\n", fd->pos);
+
+        fd->count++;
+        return fd->pos;
+    }
+    // not found
 
     int type;
     if(name[0] == '/') type = FILETYPE_FILE;
@@ -1122,23 +1169,10 @@ int file_descriptor_find_or_add(const char *name)
         type = FILETYPE_OTHER;
     }
 
-    all_files[c].name = strdupz(name);
-    all_files[c].hash = hash;
-    all_files[c].type = type;
-    all_files[c].pos  = c;
-    all_files[c].count = 1;
-#ifdef NETDATA_INTERNAL_CHECKS
-    all_files[c].magic = 0x0BADCAFE;
-#endif /* NETDATA_INTERNAL_CHECKS */
-    file_descriptor_add(&all_files[c]);
-
-    if(unlikely(debug))
-        fprintf(stderr, "apps.plugin: using fd position %d (name: %s)\n", c, all_files[c].name);
-
-    return c;
+    return file_descriptor_set_on_empty_slot(name, hash, type);
 }
 
-int read_pid_file_descriptors(struct pid_stat *p) {
+static inline int read_pid_file_descriptors(struct pid_stat *p) {
     char dirname[FILENAME_MAX+1];
 
     snprintfz(dirname, FILENAME_MAX, "%s/proc/%d/fd", global_host_prefix, p->pid);
@@ -1158,22 +1192,18 @@ int read_pid_file_descriptors(struct pid_stat *p) {
                 continue;
 
             // check if the fds array is small
-            int fdid = atoi(de->d_name);
+            int fdid = (int)str2l(de->d_name);
             if(fdid < 0) continue;
             if(fdid >= p->fds_size) {
                 // it is small, extend it
                 if(unlikely(debug))
-                    fprintf(stderr, "apps.plugin: extending fd memory slots for %s from %d to %d\n", p->comm, p->fds_size, fdid + 100);
+                    fprintf(stderr, "apps.plugin: extending fd memory slots for %s from %d to %d\n", p->comm, p->fds_size, fdid + MAX_SPARE_FDS);
 
-                p->fds = reallocz(p->fds, (fdid + 100) * sizeof(int));
-                if(!p->fds) {
-                    fatal("Cannot re-allocate fds for %s", p->comm);
-                    break;
-                }
+                p->fds = reallocz(p->fds, (fdid + MAX_SPARE_FDS) * sizeof(int));
 
                 // and initialize it
-                for(c = p->fds_size ; c < (fdid + 100) ; c++) p->fds[c] = 0;
-                p->fds_size = fdid + 100;
+                for(c = p->fds_size ; c < (fdid + MAX_SPARE_FDS) ; c++) p->fds[c] = 0;
+                p->fds_size = fdid + MAX_SPARE_FDS;
             }
 
             if(p->fds[fdid] == 0) {
@@ -1216,7 +1246,7 @@ int read_pid_file_descriptors(struct pid_stat *p) {
 
 // ----------------------------------------------------------------------------
 
-int print_process_and_parents(struct pid_stat *p, unsigned long long time) {
+static inline int print_process_and_parents(struct pid_stat *p, unsigned long long time) {
     char *prefix = "\\_ ";
     int indent = 0;
 
@@ -1255,13 +1285,13 @@ int print_process_and_parents(struct pid_stat *p, unsigned long long time) {
     return indent + 1;
 }
 
-void print_process_tree(struct pid_stat *p, char *msg) {
+static inline void print_process_tree(struct pid_stat *p, char *msg) {
     log_date(stderr);
     fprintf(stderr, "%s: process %s (%d, %s) with parents:\n", msg, p->comm, p->pid, p->updated?"running":"exited");
     print_process_and_parents(p, p->stat_collected_usec);
 }
 
-void find_lost_child_debug(struct pid_stat *pe, unsigned long long lost, int type) {
+static inline void find_lost_child_debug(struct pid_stat *pe, unsigned long long lost, int type) {
     int found = 0;
     struct pid_stat *p = NULL;
 
@@ -1331,7 +1361,7 @@ void find_lost_child_debug(struct pid_stat *pe, unsigned long long lost, int typ
     }
 }
 
-unsigned long long remove_exited_child_from_parent(unsigned long long *field, unsigned long long *pfield) {
+static inline unsigned long long remove_exited_child_from_parent(unsigned long long *field, unsigned long long *pfield) {
     unsigned long long absorbed = 0;
 
     if(*field > *pfield) {
@@ -1348,7 +1378,7 @@ unsigned long long remove_exited_child_from_parent(unsigned long long *field, un
     return absorbed;
 }
 
-void process_exited_processes() {
+static inline void process_exited_processes() {
     struct pid_stat *p;
 
     for(p = root_of_pids; p ; p = p->next) {
@@ -1441,11 +1471,11 @@ void process_exited_processes() {
                         );
             }
 
-            p->utime_raw   = utime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (1000000ULL * RATES_DETAIL);
-            p->stime_raw   = stime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (1000000ULL * RATES_DETAIL);
-            p->gtime_raw   = gtime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (1000000ULL * RATES_DETAIL);
-            p->minflt_raw  = minflt * (p->stat_collected_usec - p->last_stat_collected_usec) / (1000000ULL * RATES_DETAIL);
-            p->majflt_raw  = majflt * (p->stat_collected_usec - p->last_stat_collected_usec) / (1000000ULL * RATES_DETAIL);
+            p->utime_raw   = utime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (USEC_PER_SEC * RATES_DETAIL);
+            p->stime_raw   = stime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (USEC_PER_SEC * RATES_DETAIL);
+            p->gtime_raw   = gtime  * (p->stat_collected_usec - p->last_stat_collected_usec) / (USEC_PER_SEC * RATES_DETAIL);
+            p->minflt_raw  = minflt * (p->stat_collected_usec - p->last_stat_collected_usec) / (USEC_PER_SEC * RATES_DETAIL);
+            p->majflt_raw  = majflt * (p->stat_collected_usec - p->last_stat_collected_usec) / (USEC_PER_SEC * RATES_DETAIL);
             p->cutime_raw = p->cstime_raw = p->cgtime_raw = p->cminflt_raw = p->cmajflt_raw = 0;
 
             if(unlikely(debug))
@@ -1461,7 +1491,7 @@ void process_exited_processes() {
     }
 }
 
-void link_all_processes_to_their_parents(void) {
+static inline void link_all_processes_to_their_parents(void) {
     struct pid_stat *p, *pp;
 
     // link all children to their parents
@@ -1564,15 +1594,15 @@ static inline int managed_log(struct pid_stat *p, uint32_t log, int status) {
     return status;
 }
 
-void collect_data_for_pid(pid_t pid) {
+static inline int collect_data_for_pid(pid_t pid) {
     if(unlikely(pid <= 0 || pid > pid_max)) {
         error("Invalid pid %d read (expected 1 to %d). Ignoring process.", pid, pid_max);
-        return;
+        return 0;
     }
 
     struct pid_stat *p = get_pid_entry(pid);
-    if(unlikely(!p || p->read)) return;
-    p->read             = 1;
+    if(unlikely(!p || p->read)) return 0;
+    p->read = 1;
 
     // fprintf(stderr, "Reading process %d (%s), sortlist %d\n", p->pid, p->comm, p->sortlist);
 
@@ -1581,7 +1611,7 @@ void collect_data_for_pid(pid_t pid) {
 
     if(unlikely(!managed_log(p, PID_LOG_STAT, read_proc_pid_stat(p))))
         // there is no reason to proceed if we cannot get its status
-        return;
+        return 0;
 
     read_proc_pid_ownership(p);
 
@@ -1601,7 +1631,7 @@ void collect_data_for_pid(pid_t pid) {
 
     if(unlikely(!managed_log(p, PID_LOG_STATM, read_proc_pid_statm(p))))
         // there is no reason to proceed if we cannot get its memory status
-        return;
+        return 0;
 
     // --------------------------------------------------------------------
     // link it
@@ -1660,9 +1690,11 @@ void collect_data_for_pid(pid_t pid) {
     p->updated = 1;
     p->keep = 0;
     p->keeploops = 0;
+
+    return 1;
 }
 
-int collect_data_for_all_processes_from_proc(void) {
+static int collect_data_for_all_processes_from_proc(void) {
     struct pid_stat *p = NULL;
 
     if(all_pids_count) {
@@ -1690,7 +1722,7 @@ int collect_data_for_all_processes_from_proc(void) {
         }
 
         if(include_exited_childs) {
-            qsort((void *)all_pids_sortlist, all_pids_count, sizeof(pid_t), compar_pid);
+            qsort((void *)all_pids_sortlist, (size_t)all_pids_count, sizeof(pid_t), compar_pid);
             for(slc = 0; slc < all_pids_count; slc++)
                 collect_data_for_pid(all_pids_sortlist[slc]);
         }
@@ -1715,6 +1747,9 @@ int collect_data_for_all_processes_from_proc(void) {
         collect_data_for_pid(pid);
     }
     closedir(dir);
+
+    if(!all_pids_count)
+        return 0;
 
     // normally this is done
     // however we may have processes exited while we collected values
@@ -1745,7 +1780,7 @@ int collect_data_for_all_processes_from_proc(void) {
 // 9. find the unique file count for each target
 // check: update_apps_groups_statistics()
 
-void cleanup_exited_pids(void) {
+static void cleanup_exited_pids(void) {
     int c;
     struct pid_stat *p = NULL;
 
@@ -1773,7 +1808,7 @@ void cleanup_exited_pids(void) {
     }
 }
 
-void apply_apps_groups_targets_inheritance(void) {
+static void apply_apps_groups_targets_inheritance(void) {
     struct pid_stat *p = NULL;
 
     // children that do not have a target
@@ -1883,15 +1918,12 @@ void apply_apps_groups_targets_inheritance(void) {
         fprintf(stderr, "apps.plugin: apply_apps_groups_targets_inheritance() made %d loops on the process tree\n", loops);
 }
 
-long zero_all_targets(struct target *root) {
+static long zero_all_targets(struct target *root) {
     struct target *w;
     long count = 0;
 
     for (w = root; w ; w = w->next) {
         count++;
-
-        if(w->fds) freez(w->fds);
-        w->fds = NULL;
 
         w->minflt = 0;
         w->majflt = 0;
@@ -1922,132 +1954,168 @@ long zero_all_targets(struct target *root) {
         w->io_storage_bytes_read = 0;
         w->io_storage_bytes_written = 0;
         // w->io_cancelled_write_bytes = 0;
+
+        // zero file counters
+        if(w->target_fds) {
+            memset(w->target_fds, 0, sizeof(int) * w->target_fds_size);
+            w->openfiles = 0;
+            w->openpipes = 0;
+            w->opensockets = 0;
+            w->openinotifies = 0;
+            w->openeventfds = 0;
+            w->opentimerfds = 0;
+            w->opensignalfds = 0;
+            w->openeventpolls = 0;
+            w->openother = 0;
+        }
     }
 
     return count;
 }
 
-void aggregate_pid_on_target(struct target *w, struct pid_stat *p, struct target *o) {
+static inline void reallocate_target_fds(struct target *w) {
+    if(unlikely(!w))
+        return;
+
+    if(unlikely(!w->target_fds || w->target_fds_size < all_files_size)) {
+        w->target_fds = reallocz(w->target_fds, sizeof(int) * all_files_size);
+        memset(&w->target_fds[w->target_fds_size], 0, sizeof(int) * (all_files_size - w->target_fds_size));
+        w->target_fds_size = all_files_size;
+    }
+}
+
+static inline void aggregate_fd_on_target(int fd, struct target *w) {
+    if(unlikely(!w))
+        return;
+
+    if(unlikely(w->target_fds[fd])) {
+        // it is already aggregated
+        // just increase its usage counter
+        w->target_fds[fd]++;
+        return;
+    }
+
+    // increase its usage counter
+    // so that we will not add it again
+    w->target_fds[fd]++;
+
+    switch(all_files[fd].type) {
+        case FILETYPE_FILE:
+            w->openfiles++;
+            break;
+
+        case FILETYPE_PIPE:
+            w->openpipes++;
+            break;
+
+        case FILETYPE_SOCKET:
+            w->opensockets++;
+            break;
+
+        case FILETYPE_INOTIFY:
+            w->openinotifies++;
+            break;
+
+        case FILETYPE_EVENTFD:
+            w->openeventfds++;
+            break;
+
+        case FILETYPE_TIMERFD:
+            w->opentimerfds++;
+            break;
+
+        case FILETYPE_SIGNALFD:
+            w->opensignalfds++;
+            break;
+
+        case FILETYPE_EVENTPOLL:
+            w->openeventpolls++;
+            break;
+
+        default:
+            w->openother++;
+            break;
+    }
+}
+
+static inline void aggregate_pid_fds_on_targets(struct pid_stat *p) {
+
+    if(unlikely(!p->updated)) {
+        // the process is not running
+        return;
+    }
+
+    struct target *w = p->target, *u = p->user_target, *g = p->group_target;
+
+    reallocate_target_fds(w);
+    reallocate_target_fds(u);
+    reallocate_target_fds(g);
+
+    int c, size = p->fds_size, *fds = p->fds;
+    for(c = 0; c < size ;c++) {
+        int fd = fds[c];
+
+        if(likely(fd <= 0 || fd >= all_files_size))
+            continue;
+
+        aggregate_fd_on_target(fd, w);
+        aggregate_fd_on_target(fd, u);
+        aggregate_fd_on_target(fd, g);
+    }
+}
+
+static inline void aggregate_pid_on_target(struct target *w, struct pid_stat *p, struct target *o) {
     (void)o;
 
-    if(unlikely(!w->fds))
-        w->fds = callocz(sizeof(int), (size_t) all_files_size);
-
-    if(likely(p->updated)) {
-        w->cutime  += p->cutime;
-        w->cstime  += p->cstime;
-        w->cgtime  += p->cgtime;
-        w->cminflt += p->cminflt;
-        w->cmajflt += p->cmajflt;
-
-        w->utime  += p->utime;
-        w->stime  += p->stime;
-        w->gtime  += p->gtime;
-        w->minflt += p->minflt;
-        w->majflt += p->majflt;
-
-        // w->rss += p->rss;
-
-        w->statm_size += p->statm_size;
-        w->statm_resident += p->statm_resident;
-        w->statm_share += p->statm_share;
-        // w->statm_text += p->statm_text;
-        // w->statm_lib += p->statm_lib;
-        // w->statm_data += p->statm_data;
-        // w->statm_dirty += p->statm_dirty;
-
-        w->io_logical_bytes_read    += p->io_logical_bytes_read;
-        w->io_logical_bytes_written += p->io_logical_bytes_written;
-        // w->io_read_calls            += p->io_read_calls;
-        // w->io_write_calls           += p->io_write_calls;
-        w->io_storage_bytes_read    += p->io_storage_bytes_read;
-        w->io_storage_bytes_written += p->io_storage_bytes_written;
-        // w->io_cancelled_write_bytes += p->io_cancelled_write_bytes;
-
-        w->processes++;
-        w->num_threads += p->num_threads;
-
-        if(likely(w->fds)) {
-            int c;
-            for(c = 0; c < p->fds_size ;c++) {
-                if(p->fds[c] == 0) continue;
-
-                if(likely(p->fds[c] < all_files_size)) {
-                    if(w->fds) w->fds[p->fds[c]]++;
-                }
-                else
-                    error("Invalid fd number %d", p->fds[c]);
-            }
-        }
-
-        if(unlikely(debug || w->debug))
-            fprintf(stderr, "apps.plugin: \taggregating '%s' pid %d on target '%s' utime=%llu, stime=%llu, gtime=%llu, cutime=%llu, cstime=%llu, cgtime=%llu, minflt=%llu, majflt=%llu, cminflt=%llu, cmajflt=%llu\n", p->comm, p->pid, w->name, p->utime, p->stime, p->gtime, p->cutime, p->cstime, p->cgtime, p->minflt, p->majflt, p->cminflt, p->cmajflt);
+    if(unlikely(!p->updated)) {
+        // the process is not running
+        return;
     }
+
+    if(unlikely(!w)) {
+        error("pid %d %s was left without a target!", p->pid, p->comm);
+        return;
+    }
+
+    w->cutime  += p->cutime;
+    w->cstime  += p->cstime;
+    w->cgtime  += p->cgtime;
+    w->cminflt += p->cminflt;
+    w->cmajflt += p->cmajflt;
+
+    w->utime  += p->utime;
+    w->stime  += p->stime;
+    w->gtime  += p->gtime;
+    w->minflt += p->minflt;
+    w->majflt += p->majflt;
+
+    // w->rss += p->rss;
+
+    w->statm_size += p->statm_size;
+    w->statm_resident += p->statm_resident;
+    w->statm_share += p->statm_share;
+    // w->statm_text += p->statm_text;
+    // w->statm_lib += p->statm_lib;
+    // w->statm_data += p->statm_data;
+    // w->statm_dirty += p->statm_dirty;
+
+    w->io_logical_bytes_read    += p->io_logical_bytes_read;
+    w->io_logical_bytes_written += p->io_logical_bytes_written;
+    // w->io_read_calls            += p->io_read_calls;
+    // w->io_write_calls           += p->io_write_calls;
+    w->io_storage_bytes_read    += p->io_storage_bytes_read;
+    w->io_storage_bytes_written += p->io_storage_bytes_written;
+    // w->io_cancelled_write_bytes += p->io_cancelled_write_bytes;
+
+    w->processes++;
+    w->num_threads += p->num_threads;
+
+    if(unlikely(debug || w->debug))
+        fprintf(stderr, "apps.plugin: \taggregating '%s' pid %d on target '%s' utime=%llu, stime=%llu, gtime=%llu, cutime=%llu, cstime=%llu, cgtime=%llu, minflt=%llu, majflt=%llu, cminflt=%llu, cmajflt=%llu\n", p->comm, p->pid, w->name, p->utime, p->stime, p->gtime, p->cutime, p->cstime, p->cgtime, p->minflt, p->majflt, p->cminflt, p->cmajflt);
 }
 
-void count_targets_fds(struct target *root) {
-    int c;
-    struct target *w;
+static void calculate_netdata_statistics(void) {
 
-    for (w = root; w ; w = w->next) {
-        if(!w->fds) continue;
-
-        w->openfiles = 0;
-        w->openpipes = 0;
-        w->opensockets = 0;
-        w->openinotifies = 0;
-        w->openeventfds = 0;
-        w->opentimerfds = 0;
-        w->opensignalfds = 0;
-        w->openeventpolls = 0;
-        w->openother = 0;
-
-        for(c = 1; c < all_files_size ;c++) {
-            if(w->fds[c] > 0)
-                switch(all_files[c].type) {
-                case FILETYPE_FILE:
-                    w->openfiles++;
-                    break;
-
-                case FILETYPE_PIPE:
-                    w->openpipes++;
-                    break;
-
-                case FILETYPE_SOCKET:
-                    w->opensockets++;
-                    break;
-
-                case FILETYPE_INOTIFY:
-                    w->openinotifies++;
-                    break;
-
-                case FILETYPE_EVENTFD:
-                    w->openeventfds++;
-                    break;
-
-                case FILETYPE_TIMERFD:
-                    w->opentimerfds++;
-                    break;
-
-                case FILETYPE_SIGNALFD:
-                    w->opensignalfds++;
-                    break;
-
-                case FILETYPE_EVENTPOLL:
-                    w->openeventpolls++;
-                    break;
-
-                default:
-                    w->openother++;
-            }
-        }
-
-        freez(w->fds);
-        w->fds = NULL;
-    }
-}
-
-void calculate_netdata_statistics(void) {
     apply_apps_groups_targets_inheritance();
 
     zero_all_targets(users_root_target);
@@ -2058,19 +2126,18 @@ void calculate_netdata_statistics(void) {
     struct pid_stat *p = NULL;
     struct target *w = NULL, *o = NULL;
 
-    // concentrate everything on the apps_groups_targets
+    // concentrate everything on the targets
     for(p = root_of_pids; p ; p = p->next) {
 
         // --------------------------------------------------------------------
-        // apps_groups targets
-        if(likely(p->target))
-            aggregate_pid_on_target(p->target, p, NULL);
-        else
-            error("pid %d %s was left without a target!", p->pid, p->comm);
+        // apps_groups target
+
+        aggregate_pid_on_target(p->target, p, NULL);
 
 
         // --------------------------------------------------------------------
-        // user targets
+        // user target
+
         o = p->user_target;
         if(likely(p->user_target && p->user_target->uid == p->uid))
             w = p->user_target;
@@ -2081,14 +2148,12 @@ void calculate_netdata_statistics(void) {
             w = p->user_target = get_users_target(p->uid);
         }
 
-        if(likely(w))
-            aggregate_pid_on_target(w, p, o);
-        else
-            error("pid %d %s was left without a user target!", p->pid, p->comm);
+        aggregate_pid_on_target(w, p, o);
 
 
         // --------------------------------------------------------------------
-        // group targets
+        // user group target
+
         o = p->group_target;
         if(likely(p->group_target && p->group_target->gid == p->gid))
             w = p->group_target;
@@ -2099,16 +2164,15 @@ void calculate_netdata_statistics(void) {
             w = p->group_target = get_groups_target(p->gid);
         }
 
-        if(likely(w))
-            aggregate_pid_on_target(w, p, o);
-        else
-            error("pid %d %s was left without a group target!", p->pid, p->comm);
+        aggregate_pid_on_target(w, p, o);
 
+
+        // --------------------------------------------------------------------
+        // aggregate all file descriptors
+
+        if(enable_file_charts)
+            aggregate_pid_fds_on_targets(p);
     }
-
-    count_targets_fds(apps_groups_root_target);
-    count_targets_fds(users_root_target);
-    count_targets_fds(groups_root_target);
 
     cleanup_exited_pids();
 }
@@ -2116,72 +2180,58 @@ void calculate_netdata_statistics(void) {
 // ----------------------------------------------------------------------------
 // update chart dimensions
 
-BUFFER *output = NULL;
 int print_calculated_number(char *str, calculated_number value) { (void)str; (void)value; return 0; }
 
 static inline void send_BEGIN(const char *type, const char *id, unsigned long long usec) {
-    // fprintf(stdout, "BEGIN %s.%s %llu\n", type, id, usec);
-    buffer_strcat(output, "BEGIN ");
-    buffer_strcat(output, type);
-    buffer_strcat(output, ".");
-    buffer_strcat(output, id);
-    buffer_strcat(output, " ");
-    buffer_print_llu(output, usec);
-    buffer_strcat(output, "\n");
+    fprintf(stdout, "BEGIN %s.%s %llu\n", type, id, usec);
 }
 
 static inline void send_SET(const char *name, unsigned long long value) {
-    // fprintf(stdout, "SET %s = %llu\n", name, value);
-    buffer_strcat(output, "SET ");
-    buffer_strcat(output, name);
-    buffer_strcat(output, " = ");
-    buffer_print_llu(output, value);
-    buffer_strcat(output, "\n");
+    fprintf(stdout, "SET %s = %llu\n", name, value);
 }
 
 static inline void send_END(void) {
-    // fprintf(stdout, "END\n");
-    buffer_strcat(output, "END\n");
+    fprintf(stdout, "END\n");
 }
 
 double utime_fix_ratio = 1.0, stime_fix_ratio = 1.0, gtime_fix_ratio = 1.0, cutime_fix_ratio = 1.0, cstime_fix_ratio = 1.0, cgtime_fix_ratio = 1.0;
 double minflt_fix_ratio = 1.0, majflt_fix_ratio = 1.0, cminflt_fix_ratio = 1.0, cmajflt_fix_ratio = 1.0;
 
-unsigned long long send_resource_usage_to_netdata() {
+static usec_t send_resource_usage_to_netdata() {
     static struct timeval last = { 0, 0 };
     static struct rusage me_last;
 
     struct timeval now;
     struct rusage me;
 
-    unsigned long long usec;
-    unsigned long long cpuuser;
-    unsigned long long cpusyst;
+    usec_t usec;
+    usec_t cpuuser;
+    usec_t cpusyst;
 
     if(!last.tv_sec) {
-        gettimeofday(&last, NULL);
+        now_realtime_timeval(&last);
         getrusage(RUSAGE_SELF, &me_last);
 
         // the first time, give a zero to allow
         // netdata calibrate to the current time
-        // usec = update_every * 1000000ULL;
+        // usec = update_every * USEC_PER_SEC;
         usec = 0ULL;
         cpuuser = 0;
         cpusyst = 0;
     }
     else {
-        gettimeofday(&now, NULL);
+        now_realtime_timeval(&now);
         getrusage(RUSAGE_SELF, &me);
 
-        usec = usec_dt(&now, &last);
-        cpuuser = me.ru_utime.tv_sec * 1000000ULL + me.ru_utime.tv_usec;
-        cpusyst = me.ru_stime.tv_sec * 1000000ULL + me.ru_stime.tv_usec;
+        usec = dt_usec(&now, &last);
+        cpuuser = me.ru_utime.tv_sec * USEC_PER_SEC + me.ru_utime.tv_usec;
+        cpusyst = me.ru_stime.tv_sec * USEC_PER_SEC + me.ru_stime.tv_usec;
 
         memmove(&last, &now, sizeof(struct timeval));
         memmove(&me_last, &me, sizeof(struct rusage));
     }
 
-    buffer_sprintf(output,
+    fprintf(stdout,
         "BEGIN netdata.apps_cpu %llu\n"
         "SET user = %llu\n"
         "SET system = %llu\n"
@@ -2216,7 +2266,7 @@ unsigned long long send_resource_usage_to_netdata() {
         );
 
     if(include_exited_childs)
-        buffer_sprintf(output,
+        fprintf(stdout,
             "BEGIN netdata.apps_children_fix %llu\n"
             "SET cutime = %llu\n"
             "SET cstime = %llu\n"
@@ -2235,7 +2285,7 @@ unsigned long long send_resource_usage_to_netdata() {
     return usec;
 }
 
-void normalize_data(struct target *root) {
+static void normalize_data(struct target *root) {
     struct target *w;
 
     // childs processing introduces spikes
@@ -2381,7 +2431,7 @@ void normalize_data(struct target *root) {
     }
 }
 
-void send_collected_data_to_netdata(struct target *root, const char *type, unsigned long long usec) {
+static void send_collected_data_to_netdata(struct target *root, const char *type, usec_t usec) {
     struct target *w;
 
     send_BEGIN(type, "cpu", usec);
@@ -2512,7 +2562,7 @@ void send_collected_data_to_netdata(struct target *root, const char *type, unsig
 // ----------------------------------------------------------------------------
 // generate the charts
 
-void send_charts_updates_to_netdata(struct target *root, const char *type, const char *title)
+static void send_charts_updates_to_netdata(struct target *root, const char *type, const char *title)
 {
     struct target *w;
     int newly_added = 0;
@@ -2532,112 +2582,112 @@ void send_charts_updates_to_netdata(struct target *root, const char *type, const
 
     // we have something new to show
     // update the charts
-    buffer_sprintf(output, "CHART %s.cpu '' '%s CPU Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu stacked 20001 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
+    fprintf(stdout, "CHART %s.cpu '' '%s CPU Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu stacked 20001 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu %s\n", w->name, hz * RATES_DETAIL / 100, w->hidden ? "hidden" : "");
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu %s\n", w->name, hz * RATES_DETAIL / 100, w->hidden ? "hidden" : "");
     }
 
-    buffer_sprintf(output, "CHART %s.mem '' '%s Real Memory (w/o shared)' 'MB' mem %s.mem stacked 20003 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.mem '' '%s Real Memory (w/o shared)' 'MB' mem %s.mem stacked 20003 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute %ld %ld\n", w->name, sysconf(_SC_PAGESIZE), 1024L*1024L);
+            fprintf(stdout, "DIMENSION %s '' absolute %ld %ld\n", w->name, sysconf(_SC_PAGESIZE), 1024L*1024L);
     }
 
-    buffer_sprintf(output, "CHART %s.vmem '' '%s Virtual Memory Size' 'MB' mem %s.vmem stacked 20004 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.vmem '' '%s Virtual Memory Size' 'MB' mem %s.vmem stacked 20004 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute %ld %ld\n", w->name, sysconf(_SC_PAGESIZE), 1024L*1024L);
+            fprintf(stdout, "DIMENSION %s '' absolute %ld %ld\n", w->name, sysconf(_SC_PAGESIZE), 1024L*1024L);
     }
 
-    buffer_sprintf(output, "CHART %s.threads '' '%s Threads' 'threads' processes %s.threads stacked 20005 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.threads '' '%s Threads' 'threads' processes %s.threads stacked 20005 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 1\n", w->name);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 1\n", w->name);
     }
 
-    buffer_sprintf(output, "CHART %s.processes '' '%s Processes' 'processes' processes %s.processes stacked 20004 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.processes '' '%s Processes' 'processes' processes %s.processes stacked 20004 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 1\n", w->name);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 1\n", w->name);
     }
 
-    buffer_sprintf(output, "CHART %s.cpu_user '' '%s CPU User Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_user stacked 20020 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
+    fprintf(stdout, "CHART %s.cpu_user '' '%s CPU User Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_user stacked 20020 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
     }
 
-    buffer_sprintf(output, "CHART %s.cpu_system '' '%s CPU System Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_system stacked 20021 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
+    fprintf(stdout, "CHART %s.cpu_system '' '%s CPU System Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_system stacked 20021 %d\n", type, title, (processors * 100), processors, (processors>1)?"s":"", type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
     }
 
     if(show_guest_time) {
-        buffer_sprintf(output, "CHART %s.cpu_guest '' '%s CPU Guest Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_system stacked 20022 %d\n", type, title, (processors * 100), processors, (processors > 1) ? "s" : "", type, update_every);
+        fprintf(stdout, "CHART %s.cpu_guest '' '%s CPU Guest Time (%d%% = %d core%s)' 'cpu time %%' cpu %s.cpu_system stacked 20022 %d\n", type, title, (processors * 100), processors, (processors > 1) ? "s" : "", type, update_every);
         for (w = root; w; w = w->next) {
             if(unlikely(w->exposed))
-                buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
+                fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, hz * RATES_DETAIL / 100LLU);
         }
     }
 
-    buffer_sprintf(output, "CHART %s.major_faults '' '%s Major Page Faults (swap read)' 'page faults/s' swap %s.major_faults stacked 20010 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.major_faults '' '%s Major Page Faults (swap read)' 'page faults/s' swap %s.major_faults stacked 20010 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, RATES_DETAIL);
     }
 
-    buffer_sprintf(output, "CHART %s.minor_faults '' '%s Minor Page Faults' 'page faults/s' mem %s.minor_faults stacked 20011 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.minor_faults '' '%s Minor Page Faults' 'page faults/s' mem %s.minor_faults stacked 20011 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, RATES_DETAIL);
     }
 
-    buffer_sprintf(output, "CHART %s.lreads '' '%s Disk Logical Reads' 'kilobytes/s' disk %s.lreads stacked 20042 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.lreads '' '%s Disk Logical Reads' 'kilobytes/s' disk %s.lreads stacked 20042 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
     }
 
-    buffer_sprintf(output, "CHART %s.lwrites '' '%s I/O Logical Writes' 'kilobytes/s' disk %s.lwrites stacked 20042 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.lwrites '' '%s I/O Logical Writes' 'kilobytes/s' disk %s.lwrites stacked 20042 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
     }
 
-    buffer_sprintf(output, "CHART %s.preads '' '%s Disk Reads' 'kilobytes/s' disk %s.preads stacked 20002 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.preads '' '%s Disk Reads' 'kilobytes/s' disk %s.preads stacked 20002 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
     }
 
-    buffer_sprintf(output, "CHART %s.pwrites '' '%s Disk Writes' 'kilobytes/s' disk %s.pwrites stacked 20002 %d\n", type, title, type, update_every);
+    fprintf(stdout, "CHART %s.pwrites '' '%s Disk Writes' 'kilobytes/s' disk %s.pwrites stacked 20002 %d\n", type, title, type, update_every);
     for (w = root; w ; w = w->next) {
         if(unlikely(w->exposed))
-            buffer_sprintf(output, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
+            fprintf(stdout, "DIMENSION %s '' absolute 1 %llu\n", w->name, 1024LLU * RATES_DETAIL);
     }
 
     if(enable_file_charts) {
-        buffer_sprintf(output, "CHART %s.files '' '%s Open Files' 'open files' disk %s.files stacked 20050 %d\n", type,
+        fprintf(stdout, "CHART %s.files '' '%s Open Files' 'open files' disk %s.files stacked 20050 %d\n", type,
                        title, type, update_every);
         for (w = root; w; w = w->next) {
             if (unlikely(w->exposed))
-                buffer_sprintf(output, "DIMENSION %s '' absolute 1 1\n", w->name);
+                fprintf(stdout, "DIMENSION %s '' absolute 1 1\n", w->name);
         }
 
-        buffer_sprintf(output, "CHART %s.sockets '' '%s Open Sockets' 'open sockets' net %s.sockets stacked 20051 %d\n",
+        fprintf(stdout, "CHART %s.sockets '' '%s Open Sockets' 'open sockets' net %s.sockets stacked 20051 %d\n",
                        type, title, type, update_every);
         for (w = root; w; w = w->next) {
             if (unlikely(w->exposed))
-                buffer_sprintf(output, "DIMENSION %s '' absolute 1 1\n", w->name);
+                fprintf(stdout, "DIMENSION %s '' absolute 1 1\n", w->name);
         }
 
-        buffer_sprintf(output, "CHART %s.pipes '' '%s Pipes' 'open pipes' processes %s.pipes stacked 20053 %d\n", type,
+        fprintf(stdout, "CHART %s.pipes '' '%s Pipes' 'open pipes' processes %s.pipes stacked 20053 %d\n", type,
                        title, type, update_every);
         for (w = root; w; w = w->next) {
             if (unlikely(w->exposed))
-                buffer_sprintf(output, "DIMENSION %s '' absolute 1 1\n", w->name);
+                fprintf(stdout, "DIMENSION %s '' absolute 1 1\n", w->name);
         }
     }
 }
@@ -2646,18 +2696,23 @@ void send_charts_updates_to_netdata(struct target *root, const char *type, const
 // ----------------------------------------------------------------------------
 // parse command line arguments
 
-void parse_args(int argc, char **argv)
+static void parse_args(int argc, char **argv)
 {
     int i, freq = 0;
     char *name = NULL;
 
     for(i = 1; i < argc; i++) {
         if(!freq) {
-            int n = atoi(argv[i]);
+            int n = (int)str2l(argv[i]);
             if(n > 0) {
                 freq = n;
                 continue;
             }
+        }
+
+        if(strcmp("version", argv[i]) == 0 || strcmp("-v", argv[i]) == 0) {
+            printf("apps.plugin %s\n", VERSION);
+            exit(0);
         }
 
         if(strcmp("debug", argv[i]) == 0) {
@@ -2708,33 +2763,40 @@ void parse_args(int argc, char **argv)
 
         if(strcmp("-h", argv[i]) == 0 || strcmp("--help", argv[i]) == 0) {
             fprintf(stderr,
-                    "apps.plugin\n"
-                    "(C) 2016 Costa Tsaousis"
-                    "GPL v3+\n"
-                    "This program is a data collector plugin for netdata.\n"
                     "\n"
-                    "Valid command line options:\n"
+                    " netdata apps.plugin %s\n"
+                    " Copyright (C) 2016-2017 Costa Tsaousis <costa@tsaousis.gr>\n"
+                    " Released under GNU Public License v3 or later.\n"
+                    " All rights reserved.\n"
                     "\n"
-                    "SECONDS           set the data collection frequency\n"
+                    " This program is a data collector plugin for netdata.\n"
                     "\n"
-                    "debug             enable debugging (lot of output)\n"
+                    " Valid command line options:\n"
                     "\n"
-                    "with-childs\n"
-                    "without-childs    enable / disable aggregating exited\n"
-                    "                  children resources into parents\n"
-                    "                  (default is enabled)\n"
+                    " SECONDS           set the data collection frequency\n"
                     "\n"
-                    "with-guest\n"
-                    "without-guest     enable / disable reporting guest charts\n"
-                    "                  (default is disabled)\n"
+                    " debug             enable debugging (lot of output)\n"
                     "\n"
-                    "with-files\n"
-                    "without-files     enable / disable reporting files, sockets, pipes\n"
-                    "                  (default is enabled)\n"
+                    " with-childs\n"
+                    " without-childs    enable / disable aggregating exited\n"
+                    "                   children resources into parents\n"
+                    "                   (default is enabled)\n"
                     "\n"
-                    "NAME              read apps_NAME.conf instead of\n"
-                    "                  apps_groups.conf\n"
-                    "                  (default NAME=groups)\n"
+                    " with-guest\n"
+                    " without-guest     enable / disable reporting guest charts\n"
+                    "                   (default is disabled)\n"
+                    "\n"
+                    " with-files\n"
+                    " without-files     enable / disable reporting files, sockets, pipes\n"
+                    "                   (default is enabled)\n"
+                    "\n"
+                    " NAME              read apps_NAME.conf instead of\n"
+                    "                   apps_groups.conf\n"
+                    "                   (default NAME=groups)\n"
+                    "\n"
+                    " version           print program version and exit\n"
+                    "\n"
+                    , VERSION
             );
             exit(1);
         }
@@ -2752,7 +2814,7 @@ void parse_args(int argc, char **argv)
     if(!name) name = "groups";
 
     if(read_apps_groups_conf(name)) {
-        error("Cannot read process groups %s", name);
+        error("Cannot read process groups '%s/apps_%s.conf'. There are no internal defaults. Failing.", config_dir, name);
         exit(1);
     }
 }
@@ -2798,7 +2860,7 @@ int main(int argc, char **argv)
 
     procfile_adaptive_initial_allocation = 1;
 
-    time_t started_t = time(NULL);
+    time_t started_t = now_realtime_sec();
     get_system_HZ();
     get_system_pid_max();
     get_system_cpus();
@@ -2808,8 +2870,7 @@ int main(int argc, char **argv)
     all_pids_sortlist = callocz(sizeof(pid_t), (size_t)pid_max);
     all_pids = callocz(sizeof(struct pid_stat *), (size_t) pid_max);
 
-    output = buffer_create(1024);
-    buffer_sprintf(output,
+    fprintf(stdout,
         "CHART netdata.apps_cpu '' 'Apps Plugin CPU' 'milliseconds/s' apps.plugin netdata.apps_cpu stacked 140000 %1$d\n"
         "DIMENSION user '' incremental 1 1000\n"
         "DIMENSION system '' incremental 1 1000\n"
@@ -2829,7 +2890,7 @@ int main(int argc, char **argv)
         );
 
     if(include_exited_childs)
-        buffer_sprintf(output,
+        fprintf(stdout,
             "CHART netdata.apps_children_fix '' 'Apps Plugin Exited Children Normalization Ratios' 'percentage' apps.plugin netdata.apps_children_fix line 140003 %1$d\n"
             "DIMENSION cutime '' absolute 1 %2$llu\n"
             "DIMENSION cstime '' absolute 1 %2$llu\n"
@@ -2840,16 +2901,23 @@ int main(int argc, char **argv)
             , RATES_DETAIL
             );
 
-    unsigned long long step = update_every * 1000000ULL;
+    usec_t step = update_every * USEC_PER_SEC;
     global_iterations_counter = 1;
     for(;1; global_iterations_counter++) {
-        unsigned long long now = time_usec();
-        unsigned long long next = now - (now % step) + step;
+        usec_t now = now_realtime_usec();
+        usec_t next = now - (now % step) + step;
 
+#ifdef NETDATA_PROFILING
+#warning "compiling for profiling"
+        static int profiling_count=0;
+        profiling_count++;
+        if(unlikely(profiling_count > 1000)) exit(0);
+#else
         while(now < next) {
             sleep_usec(next - now);
-            now = time_usec();
+            now = now_realtime_usec();
         }
+#endif
 
         if(!collect_data_for_all_processes_from_proc()) {
             error("Cannot collect /proc data for running processes. Disabling apps.plugin...");
@@ -2860,7 +2928,7 @@ int main(int argc, char **argv)
         calculate_netdata_statistics();
         normalize_data(apps_groups_root_target);
 
-        unsigned long long dt = send_resource_usage_to_netdata();
+        usec_t dt = send_resource_usage_to_netdata();
 
         // this is smart enough to show only newly added apps, when needed
         send_charts_updates_to_netdata(apps_groups_root_target, "apps", "Apps");
@@ -2879,18 +2947,14 @@ int main(int argc, char **argv)
         if(likely(enable_groups_charts))
             send_collected_data_to_netdata(groups_root_target, "groups", dt);
 
+        fflush(stdout);
+
         show_guest_time_old = show_guest_time;
-
-        if(write(STDOUT_FILENO, buffer_tostring(output), buffer_strlen(output)) == -1)
-            fatal("Cannot send chart values to netdata.");
-
-        // fflush(stdout);
-        buffer_flush(output);
 
         if(unlikely(debug))
             fprintf(stderr, "apps.plugin: done Loop No %llu\n", global_iterations_counter);
 
-        time_t current_t = time(NULL);
+        time_t current_t = now_realtime_sec();
 
         // restart check (14400 seconds)
         if(current_t - started_t > 14400) exit(0);

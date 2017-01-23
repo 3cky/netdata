@@ -290,7 +290,7 @@ static inline int verdana11_width(char *s) {
     *d = '\0';
     w -= VERDANA_KERNING;
     w += VERDANA_PADDING;
-    return ceil(w);
+    return (int)ceil(w);
 }
 
 static inline size_t escape_xmlz(char *dst, const char *src, size_t len) {
@@ -470,7 +470,7 @@ static inline void calc_colorz(const char *color, char *final, size_t len, calcu
                     break;
             }
             else {
-                calculated_number v = strtold(value_buffer, NULL);
+                calculated_number v = str2l(value_buffer);
 
                      if(comparison == '<' && value < v) break;
                 else if(comparison == '(' && value <= v) break;
@@ -525,7 +525,49 @@ void buffer_svg(BUFFER *wb, const char *label, calculated_number value, const ch
     if(unlikely(isalnum(*units)))
         separator = " ";
 
-    if(unlikely(value_is_null))
+    if(unlikely(!strcmp(units, "seconds"))) {
+        size_t s = (size_t)value;
+        size_t d = s / 86400;
+        s = s % 86400;
+
+        size_t h = s / 3600;
+        s = s % 3600;
+
+        size_t m = s / 60;
+        s = s % 60;
+
+        if(d)
+            snprintfz(value_string, VALUE_STRING_SIZE, "%zu %s %02zu:%02zu:%02zu", d, (d == 1)?"day":"days", h, m, s);
+        else
+            snprintfz(value_string, VALUE_STRING_SIZE, "%02zu:%02zu:%02zu", h, m, s);
+    }
+
+    else if(unlikely(!strcmp(units, "minutes"))) {
+        size_t m = (size_t)value;
+        size_t d = m / (60 * 24);
+        m = m % (60 * 24);
+
+        size_t h = m / 60;
+        m = m % 60;
+
+        if(d)
+            snprintfz(value_string, VALUE_STRING_SIZE, "%zud %02zuh %02zum", d, h, m);
+        else
+            snprintfz(value_string, VALUE_STRING_SIZE, "%zuh %zum", h, m);
+    }
+
+    else if(unlikely(!strcmp(units, "hours"))) {
+        size_t h = (size_t)value;
+        size_t d = h / 24;
+        h = h % 24;
+
+        if(d)
+            snprintfz(value_string, VALUE_STRING_SIZE, "%zud %zuh", d, h);
+        else
+            snprintfz(value_string, VALUE_STRING_SIZE, "%zuh", h);
+    }
+
+    else if(unlikely(value_is_null))
         strcpy(value_string, "-");
 
     else if(precision < 0) {

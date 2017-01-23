@@ -7,6 +7,7 @@ dist_web_DATA = \
 	demo.html \
 	demo2.html \
 	demosites.html \
+	demosites2.html \
 	dashboard.html \
 	dashboard.js \
 	dashboard_info.js \
@@ -19,6 +20,7 @@ dist_web_DATA = \
 	netdata-swagger.json \
 	robots.txt \
 	registry.html \
+	sitemap.xml \
 	tv.html \
 	version.txt \
 	cso.html \
@@ -47,7 +49,7 @@ dist_weblib_DATA = \
 	lib/gauge-d5260c3.min.js \
 	lib/jquery-2.2.4.min.js \
 	lib/jquery.easypiechart-97b5824.min.js \
-	lib/jquery.nanoscroller-0.8.7.min.js \
+	lib/perfect-scrollbar-0.6.15.min.js \
 	lib/jquery.peity-3.2.0.min.js \
 	lib/jquery.sparkline-2.1.2.min.js \
 	lib/morris-0.5.1.min.js \
@@ -58,9 +60,9 @@ dist_weblib_DATA = \
 webcssdir=$(webdir)/css
 dist_webcss_DATA = \
 	css/morris-0.5.1.css \
-	css/bootstrap-3.3.7.min.css \
+	css/bootstrap-3.3.7.css \
 	css/bootstrap-theme-3.3.7.min.css \
-	css/bootstrap.slate.min.css \
+	css/bootstrap-slate-flat-3.3.7.css \
 	css/bootstrap-toggle-2.2.2.min.css \
 	css/font-awesome.min.css \
 	css/c3-0.4.11.min.css \

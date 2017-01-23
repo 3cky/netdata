@@ -29,8 +29,10 @@
 // netdata server already.
 // var netdataServer = "http://yourhost:19999"; // set your NetData server
 
-//(function(window, document, undefined) {
+// global namespace
+var NETDATA = window.NETDATA || {};
 
+(function(window, document) {
     // ------------------------------------------------------------------------
     // compatibility fixes
 
@@ -52,9 +54,6 @@
             return this.slice(s.length) === s;
         };
     }
-
-    // global namespace
-    var NETDATA = window.NETDATA || {};
 
     NETDATA.name2id = function(s) {
         return s
@@ -125,12 +124,12 @@
 
     NETDATA.themes = {
         white: {
-            bootstrap_css: NETDATA.serverDefault + 'css/bootstrap-3.3.7.min.css',
-            dashboard_css: NETDATA.serverDefault + 'dashboard.css?v20161002-1',
+            bootstrap_css: NETDATA.serverDefault + 'css/bootstrap-3.3.7.css',
+            dashboard_css: NETDATA.serverDefault + 'dashboard.css?v20161229-2',
             background: '#FFFFFF',
             foreground: '#000000',
-            grid: '#DDDDDD',
-            axis: '#CCCCCC',
+            grid: '#F0F0F0',
+            axis: '#F0F0F0',
             colors: [   '#3366CC', '#DC3912',   '#109618', '#FF9900',   '#990099', '#DD4477',
                         '#3B3EAC', '#66AA00',   '#0099C6', '#B82E2E',   '#AAAA11', '#5574A6',
                         '#994499', '#22AA99',   '#6633CC', '#E67300',   '#316395', '#8B0707',
@@ -142,8 +141,8 @@
             gauge_gradient: false
         },
         slate: {
-            bootstrap_css: NETDATA.serverDefault + 'css/bootstrap.slate.min.css?v20161002-1',
-            dashboard_css: NETDATA.serverDefault + 'dashboard.slate.css?v20161002-1',
+            bootstrap_css: NETDATA.serverDefault + 'css/bootstrap-slate-flat-3.3.7.css?v20161229-1',
+            dashboard_css: NETDATA.serverDefault + 'dashboard.slate.css?v20161229-2',
             background: '#272b30',
             foreground: '#C8C8C8',
             grid: '#283236',
@@ -195,10 +194,7 @@
 
     if(typeof netdataRegistry === 'undefined') {
         // backward compatibility
-        if(typeof netdataNoRegistry !== 'undefined' && netdataNoRegistry === false)
-            netdataRegistry = true;
-        else
-            netdataRegistry = false;
+        netdataRegistry = (typeof netdataNoRegistry !== 'undefined' && netdataNoRegistry === false);
     }
     if(netdataRegistry === false && typeof netdataRegistryCallback === 'function')
         netdataRegistry = true;
@@ -249,7 +245,7 @@
                                         // rendering the chart that is panned or zoomed).
                                         // Used with .current.global_pan_sync_time
 
-        last_resized: new Date().getTime(), // the timestamp of the last resize request
+        last_resized: Date.now(),       // the timestamp of the last resize request
 
         last_page_scroll: 0,            // the timestamp the last time the page was scrolled
 
@@ -332,7 +328,9 @@
             async_on_scroll: false,                 // sync/async onscroll handler
             onscroll_worker_duration_threshold: 30, // time in ms, to consider slow the onscroll handler
 
-            setOptionCallback: function() { ; }
+            retries_on_data_failures: 3, // how many retries to make if we can't fetch chart data from the server
+
+            setOptionCallback: function() { }
         },
 
         debug: {
@@ -341,7 +339,7 @@
             focus:              false,
             visibility:         false,
             chart_data_url:     false,
-            chart_errors:       false, // FIXME
+            chart_errors:       false, // FIXME: remember to set it to false before merging
             chart_timing:       false,
             chart_calls:        false,
             libraries:          false,
@@ -430,7 +428,11 @@
     };
 
     NETDATA.localStorageGetRecursive = function(obj, prefix, callback) {
-        for(var i in obj) {
+        var keys = Object.keys(obj);
+        var len = keys.length;
+        while(len--) {
+            var i = keys[len];
+
             if(typeof obj[i] === 'object') {
                 //console.log('object ' + prefix + '.' + i.toString());
                 NETDATA.localStorageGetRecursive(obj[i], prefix + '.' + i.toString(), callback);
@@ -477,7 +479,10 @@
     NETDATA.setOption('stop_updates_when_focus_is_lost', true);
 
     NETDATA.resetOptions = function() {
-        for(var i in NETDATA.localStorage.default) {
+        var keys = Object.keys(NETDATA.localStorage.default);
+        var len = keys.length;
+        while(len--) {
+            var i = keys[len];
             var a = i.split('.');
 
             if(a[0] === 'options') {
@@ -493,16 +498,20 @@
                 }
             }
         }
-    }
+    };
 
     // ----------------------------------------------------------------------------------------------------------------
 
     if(NETDATA.options.debug.main_loop === true)
         console.log('welcome to NETDATA');
 
+    NETDATA.onresizeCallback = null;
     NETDATA.onresize = function() {
-        NETDATA.options.last_resized = new Date().getTime();
+        NETDATA.options.last_resized = Date.now();
         NETDATA.onscroll();
+
+        if(typeof NETDATA.onresizeCallback === 'function')
+            NETDATA.onresizeCallback();
     };
 
     NETDATA.onscroll_updater_count = 0;
@@ -514,7 +523,7 @@
     NETDATA.onscroll_updater = function() {
         NETDATA.onscroll_updater_running = true;
         NETDATA.onscroll_updater_count++;
-        var start = new Date().getTime();
+        var start = Date.now();
 
         var targets = NETDATA.options.targets;
         var len = targets.length;
@@ -546,7 +555,7 @@
                 targets[len].isVisible();
         }
 
-        var end = new Date().getTime();
+        var end = Date.now();
         // console.log('scroll No ' + NETDATA.onscroll_updater_count + ' calculation took ' + (end - start).toString() + ' ms');
 
         if(NETDATA.options.current.async_on_scroll === false) {
@@ -574,7 +583,7 @@
     NETDATA.onscroll = function() {
         // console.log('onscroll');
 
-        NETDATA.options.last_page_scroll = new Date().getTime();
+        NETDATA.options.last_page_scroll = Date.now();
         NETDATA.options.auto_refresher_stop_until = 0;
 
         if(NETDATA.options.targets === null) return;
@@ -641,7 +650,7 @@
     NETDATA.error = function(code, msg) {
         NETDATA.errorLast.code = code;
         NETDATA.errorLast.message = msg;
-        NETDATA.errorLast.datetime = new Date().getTime();
+        NETDATA.errorLast.datetime = Date.now();
 
         console.log("ERROR " + code + ": " + NETDATA.errorCodes[code].message + ": " + msg);
 
@@ -783,6 +792,13 @@
     // Every time we download a chart definition, we save it here with .add()
     // Then we try to get it back with .get(). If that fails, we download it.
 
+    NETDATA.fixHost = function(host) {
+        while(host.slice(-1) === '/')
+            host = host.substring(0, host.length - 1);
+
+        return host;
+    };
+
     NETDATA.chartRegistry = {
         charts: {},
 
@@ -816,8 +832,7 @@
         },
 
         downloadAll: function(host, callback) {
-            while(host.slice(-1) === '/')
-                host = host.substring(0, host.length - 1);
+            host = NETDATA.fixHost(host);
 
             var self = this;
 
@@ -835,13 +850,13 @@
                 else NETDATA.error(406, host + '/api/v1/charts');
 
                 if(typeof callback === 'function')
-                    callback(data);
+                    return callback(data);
             })
             .fail(function() {
                 NETDATA.error(405, host + '/api/v1/charts');
 
                 if(typeof callback === 'function')
-                    callback(null);
+                    return callback(null);
             });
         }
     };
@@ -877,7 +892,7 @@
             if(this.master !== null && this.master !== state)
                 this.master.resetChart(true, true);
 
-            var now = new Date().getTime();
+            var now = Date.now();
             this.master = state;
             this.seq = now;
             this.force_after_ms = after;
@@ -966,7 +981,7 @@
     dimensionStatus.prototype.setOptions = function(name_div, value_div, color) {
         this.color = color;
 
-        if(this.name_div != name_div) {
+        if(this.name_div !== name_div) {
             this.name_div = name_div;
             this.name_div.title = this.label;
             this.name_div.style.color = this.color;
@@ -976,7 +991,7 @@
                 this.name_div.className = 'netdata-legend-name selected';
         }
 
-        if(this.value_div != value_div) {
+        if(this.value_div !== value_div) {
             this.value_div = value_div;
             this.value_div.title = this.label;
             this.value_div.style.color = this.color;
@@ -1081,26 +1096,34 @@
     };
 
     dimensionsVisibility.prototype.invalidateAll = function() {
-        for(var d in this.dimensions)
-            this.dimensions[d].invalidate();
+        var keys = Object.keys(this.dimensions);
+        var len = keys.length;
+        while(len--)
+            this.dimensions[keys[len]].invalidate();
     };
 
     dimensionsVisibility.prototype.selectAll = function() {
-        for(var d in this.dimensions)
-            this.dimensions[d].select();
+        var keys = Object.keys(this.dimensions);
+        var len = keys.length;
+        while(len--)
+            this.dimensions[keys[len]].select();
     };
 
     dimensionsVisibility.prototype.countSelected = function() {
-        var i = 0;
-        for(var d in this.dimensions)
-            if(this.dimensions[d].isSelected()) i++;
+        var selected = 0;
+        var keys = Object.keys(this.dimensions);
+        var len = keys.length;
+        while(len--)
+            if(this.dimensions[keys[len]].isSelected()) selected++;
 
-        return i;
+        return selected;
     };
 
     dimensionsVisibility.prototype.selectNone = function() {
-        for(var d in this.dimensions)
-            this.dimensions[d].unselect();
+        var keys = Object.keys(this.dimensions);
+        var len = keys.length;
+        while(len--)
+            this.dimensions[keys[len]].unselect();
     };
 
     dimensionsVisibility.prototype.selected2BooleanArray = function(array) {
@@ -1195,6 +1218,7 @@
         // the user given dimensions of the element
         this.width = self.data('width') || NETDATA.chartDefaults.width;
         this.height = self.data('height') || NETDATA.chartDefaults.height;
+        this.height_original = this.height;
 
         if(this.settings_id !== null) {
             this.height = NETDATA.localStorageGet('chart_heights.' + this.settings_id, this.height, function(height) {
@@ -1231,6 +1255,9 @@
         // the chart library requested by the user
         this.library_name = self.data('chart-library') || NETDATA.chartDefaults.library;
 
+        // how many retries we have made to load chart data from the server
+        this.retries_on_data_failures = 0;
+
         // object - the chart library used
         this.library = null;
 
@@ -1252,8 +1279,7 @@
             title_date: null,
             title_time: null,
             title_units: null,
-            nano: null,
-            nano_options: null,
+            perfect_scroller: null, // the container to apply perfect scroller to
             series: null
         };
 
@@ -1262,7 +1288,8 @@
 
         this.title = self.data('title') || null;    // the title of the chart
         this.units = self.data('units') || null;    // the units of the chart dimensions
-        this.append_options = self.data('append-options') || null;  // the units of the chart dimensions
+        this.append_options = self.data('append-options') || null;  // additional options to pass to netdata
+        this.override_options = self.data('override-options') || null;  // override options to pass to netdata
 
         this.running = false;                       // boolean - true when the chart is being refreshed now
         this.validated = false;                     // boolean - has the chart been validated?
@@ -1280,13 +1307,11 @@
         this.view_before = 0;
 
         this.value_decimal_detail = -1;
-        {
-            var d = self.data('decimal-digits');
-            if(typeof d === 'number') {
-                this.value_decimal_detail = 1;
-                while(d-- > 0)
-                    this.value_decimal_detail *= 10;
-            }
+        var d = self.data('decimal-digits');
+        if(typeof d === 'number') {
+            this.value_decimal_detail = 1;
+            while(d-- > 0)
+                this.value_decimal_detail *= 10;
         }
 
         this.auto = {
@@ -1360,7 +1385,7 @@
             that.element.innerHTML = '';
 
             that.element_message = document.createElement('div');
-            that.element_message.className = ' netdata-message hidden';
+            that.element_message.className = 'netdata-message icon hidden';
             that.element.appendChild(that.element_message);
 
             that.element_chart = document.createElement('div');
@@ -1390,9 +1415,9 @@
 
             if(typeof(that.library.aspect_ratio) === 'undefined') {
                 if(typeof(that.height) === 'string')
-                    $(that.element).css('height', that.height);
+                    that.element.style.height = that.height;
                 else if(typeof(that.height) === 'number')
-                    $(that.element).css('height', that.height + 'px');
+                    that.element.style.height = that.height.toString() + 'px';
             }
             else {
                 var w = that.element.offsetWidth;
@@ -1402,13 +1427,13 @@
                     that.tm.last_resized = 0;
                 }
                 else
-                    $(that.element).css('height', (that.element.offsetWidth * that.library.aspect_ratio / 100).toString() + 'px');
+                    that.element.style.height = (w * that.library.aspect_ratio / 100).toString() + 'px';
             }
 
             if(NETDATA.chartDefaults.min_width !== null)
                 $(that.element).css('min-width', NETDATA.chartDefaults.min_width);
 
-            that.tm.last_dom_created = new Date().getTime();
+            that.tm.last_dom_created = Date.now();
 
             showLoading();
         };
@@ -1453,15 +1478,18 @@
             that.data_before = 0;           // milliseconds - the last timestamp of the data
             that.data_update_every = 0;     // milliseconds - the frequency to update the data
 
-            that.tm.last_initialized = new Date().getTime();
+            that.tm.last_initialized = Date.now();
             createDOM();
 
             that.setMode('auto');
         };
 
         var maxMessageFontSize = function() {
+            var screenHeight = screen.height;
+            var el = that.element;
+
             // normally we want a font size, as tall as the element
-            var h = that.element_message.clientHeight;
+            var h = el.clientHeight;
 
             // but give it some air, 20% let's say, or 5 pixels min
             var lost = Math.max(h * 0.2, 5);
@@ -1472,7 +1500,7 @@
 
             // but check the width too
             // it should fit 10 characters in it
-            var w = that.element_message.clientWidth / 10;
+            var w = el.clientWidth / 10;
             if(h > w) {
                 paddingTop += (h - w) / 2;
                 h = w;
@@ -1480,9 +1508,9 @@
 
             // and don't make it too huge
             // 5% of the screen size is good
-            if(h > screen.height / 20) {
-                paddingTop += (h - (screen.height / 20)) / 2;
-                h = screen.height / 20;
+            if(h > screenHeight / 20) {
+                paddingTop += (h - (screenHeight / 20)) / 2;
+                h = screenHeight / 20;
             }
 
             // set it
@@ -1490,25 +1518,17 @@
             that.element_message.style.paddingTop = paddingTop.toString() + 'px';
         };
 
-        var showMessage = function(msg) {
-            that.element_message.className = 'netdata-message';
-            that.element_message.innerHTML = msg;
-            that.element_message.style.fontSize = 'x-small';
-            that.element_message.style.paddingTop = '0px';
-            that.___messageHidden___ = undefined;
-        };
-
         var showMessageIcon = function(icon) {
             that.element_message.innerHTML = icon;
-            that.element_message.className = 'netdata-message icon';
             maxMessageFontSize();
+            $(that.element_message).removeClass('hidden');
             that.___messageHidden___ = undefined;
         };
 
         var hideMessage = function() {
             if(typeof that.___messageHidden___ === 'undefined') {
                 that.___messageHidden___ = true;
-                that.element_message.className = 'netdata-message hidden';
+                $(that.element_message).addClass('hidden');
             }
         };
 
@@ -1555,7 +1575,7 @@
                     showRendering();
                     that.element_chart.style.display = 'none';
                     if(that.element_legend !== null) that.element_legend.style.display = 'none';
-                    that.tm.last_hidden = new Date().getTime();
+                    that.tm.last_hidden = Date.now();
 
                     // de-allocate data
                     // This works, but I not sure there are no corner cases somewhere
@@ -1581,7 +1601,7 @@
                 init();
             }
             else {
-                that.tm.last_unhidden = new Date().getTime();
+                that.tm.last_unhidden = Date.now();
                 that.element_chart.style.display = '';
                 if(that.element_legend !== null) that.element_legend.style.display = '';
                 resizeChart();
@@ -1666,13 +1686,13 @@
                 else if(typeof that.library.resize === 'function') {
                     that.library.resize(that);
 
-                    if(that.element_legend_childs.nano !== null && that.element_legend_childs.nano_options !== null)
-                        $(that.element_legend_childs.nano).nanoScroller();
+                    if(that.element_legend_childs.perfect_scroller !== null)
+                        Ps.update(that.element_legend_childs.perfect_scroller);
 
                     maxMessageFontSize();
                 }
 
-                that.tm.last_resized = new Date().getTime();
+                that.tm.last_resized = Date.now();
             }
         };
 
@@ -1689,7 +1709,7 @@
             if(that.settings_id !== null)
                 NETDATA.localStorageSet('chart_heights.' + that.settings_id, h);
 
-            var now = new Date().getTime();
+            var now = Date.now();
             NETDATA.options.last_page_scroll = now;
             NETDATA.options.auto_refresher_stop_until = now + NETDATA.options.current.stop_updates_while_resizing;
 
@@ -1724,24 +1744,54 @@
             this.event_resize.chart_last_w = this.element.clientWidth;
             this.event_resize.chart_last_h = this.element.clientHeight;
 
-            var now = new Date().getTime();
-            if(now - this.event_resize.last <= NETDATA.options.current.double_click_speed) {
+            var now = Date.now();
+            if(now - this.event_resize.last <= NETDATA.options.current.double_click_speed && this.element_legend_childs.perfect_scroller !== null) {
                 // double click / double tap event
+
+                // console.dir(this.element_legend_childs.content);
+                // console.dir(this.element_legend_childs.perfect_scroller);
 
                 // the optimal height of the chart
                 // showing the entire legend
                 var optimal = this.event_resize.chart_last_h
-                        + this.element_legend_childs.content.scrollHeight
-                        - this.element_legend_childs.content.clientHeight;
+                        + this.element_legend_childs.perfect_scroller.scrollHeight
+                        - this.element_legend_childs.perfect_scroller.clientHeight;
 
                 // if we are not optimal, be optimal
-                if(this.event_resize.chart_last_h != optimal)
+                if(this.event_resize.chart_last_h !== optimal) {
+                    // this.log('resize to optimal, current = ' + this.event_resize.chart_last_h.toString() + 'px, original = ' + this.event_resize.chart_original_h.toString() + 'px, optimal = ' + optimal.toString() + 'px, internal = ' + this.height_original.toString());
                     resizeChartToHeight(optimal.toString() + 'px');
+                }
 
-                // else if we do not have the original height
-                // reset to the original height
-                else if(this.event_resize.chart_last_h != this.event_resize.chart_original_h)
+                // else if the current height is not the original/saved height
+                // reset to the original/saved height
+                else if(this.event_resize.chart_last_h !== this.event_resize.chart_original_h) {
+                    // this.log('resize to original, current = ' + this.event_resize.chart_last_h.toString() + 'px, original = ' + this.event_resize.chart_original_h.toString() + 'px, optimal = ' + optimal.toString() + 'px, internal = ' + this.height_original.toString());
                     resizeChartToHeight(this.event_resize.chart_original_h.toString() + 'px');
+                }
+
+                // else if the current height is not the internal default height
+                // reset to the internal default height
+                else if((this.event_resize.chart_last_h.toString() + 'px') !== this.height_original) {
+                    // this.log('resize to internal default, current = ' + this.event_resize.chart_last_h.toString() + 'px, original = ' + this.event_resize.chart_original_h.toString() + 'px, optimal = ' + optimal.toString() + 'px, internal = ' + this.height_original.toString());
+                    resizeChartToHeight(this.height_original.toString());
+                }
+
+                // else if the current height is not the firstchild's clientheight
+                // resize to it
+                else if(typeof this.element_legend_childs.perfect_scroller.firstChild !== 'undefined') {
+                    var parent_rect = this.element.getBoundingClientRect();
+                    var content_rect = this.element_legend_childs.perfect_scroller.firstElementChild.getBoundingClientRect();
+                    var wanted = content_rect.top - parent_rect.top + this.element_legend_childs.perfect_scroller.firstChild.clientHeight + 18; // 15 = toolbox + 3 space
+
+                    // console.log(parent_rect);
+                    // console.log(content_rect);
+                    // console.log(wanted);
+
+                    // this.log('resize to firstChild, current = ' + this.event_resize.chart_last_h.toString() + 'px, original = ' + this.event_resize.chart_original_h.toString() + 'px, optimal = ' + optimal.toString() + 'px, internal = ' + this.height_original.toString() + 'px, firstChild = ' + wanted.toString() + 'px' );
+                    if(this.event_resize.chart_last_h !== wanted)
+                        resizeChartToHeight(wanted.toString() + 'px');
+                }
             }
             else {
                 this.event_resize.last = now;
@@ -1797,7 +1847,7 @@
         var noDataToShow = function() {
             showMessageIcon('<i class="fa fa-warning"></i> empty');
             that.legendUpdateDOM();
-            that.tm.last_autorefreshed = new Date().getTime();
+            that.tm.last_autorefreshed = Date.now();
             // that.data_update_every = 30 * 1000;
             //that.element_chart.style.display = 'none';
             //if(that.element_legend !== null) that.element_legend.style.display = 'none';
@@ -1827,7 +1877,7 @@
             this.current.force_before_ms = null;
             this.current.force_after_ms = null;
 
-            this.tm.last_mode_switch = new Date().getTime();
+            this.tm.last_mode_switch = Date.now();
         };
 
         // ----------------------------------------------------------------------------------------------------------------
@@ -1839,9 +1889,9 @@
                 return;
 
             if(typeof ms === 'number')
-                NETDATA.globalSelectionSync.dont_sync_before = new Date().getTime() + ms;
+                NETDATA.globalSelectionSync.dont_sync_before = Date.now() + ms;
             else
-                NETDATA.globalSelectionSync.dont_sync_before = new Date().getTime() + NETDATA.options.current.sync_selection_delay;
+                NETDATA.globalSelectionSync.dont_sync_before = Date.now() + NETDATA.options.current.sync_selection_delay;
         };
 
         // can we globally apply selection sync?
@@ -1849,17 +1899,14 @@
             if(NETDATA.options.current.sync_selection === false)
                 return false;
 
-            if(NETDATA.globalSelectionSync.dont_sync_before > new Date().getTime())
+            if(NETDATA.globalSelectionSync.dont_sync_before > Date.now())
                 return false;
 
             return true;
         };
 
         this.globalSelectionSyncIsMaster = function() {
-            if(NETDATA.globalSelectionSync.state === this)
-                return true;
-            else
-                return false;
+            return (NETDATA.globalSelectionSync.state === this);
         };
 
         // this chart is the master of the global selection sync
@@ -1928,12 +1975,8 @@
         // sync all the visible charts to the given time
         // this is to be called from the chart libraries
         this.globalSelectionSync = function(t) {
-            if(this.globalSelectionSyncAbility() === false) {
-                if(this.debug === true)
-                    this.log('sync: cannot sync (yet?).');
-
+            if(this.globalSelectionSyncAbility() === false)
                 return;
-            }
 
             if(this.globalSelectionSyncIsMaster() === false) {
                 if(this.debug === true)
@@ -1941,12 +1984,8 @@
 
                 this.globalSelectionSyncBeMaster();
 
-                if(this.globalSelectionSyncAbility() === false) {
-                    if(this.debug === true)
-                        this.log('sync: cannot sync (yet?).');
-
+                if(this.globalSelectionSyncAbility() === false)
                     return;
-                }
             }
 
             NETDATA.globalSelectionSync.last_t = t;
@@ -2164,7 +2203,7 @@
             if(this.debug === true)
                 this.log(logme + 'ACCEPTING UPDATE: current/min duration: ' + (current_duration / 1000).toString() + '/' + (this.fixed_min_duration / 1000).toString() + ', wanted duration: ' + (wanted_duration / 1000).toString() + ', duration diff: ' + (Math.round(Math.abs(current_duration - wanted_duration) / 1000)).toString() + ', movement: ' + (movement / 1000).toString() + ', tolerance: ' + (tolerance / 1000).toString() + ', returning: ' + ret);
 
-            this.current.force_update_at = new Date().getTime() + NETDATA.options.current.pan_and_zoom_delay;
+            this.current.force_update_at = Date.now() + NETDATA.options.current.pan_and_zoom_delay;
             this.current.force_after_ms = after;
             this.current.force_before_ms = before;
             NETDATA.globalPanAndZoom.setMaster(this, after, before);
@@ -2191,6 +2230,10 @@
             if(typeof series === 'undefined') return;
             if(series.value === null && series.user === null) return;
 
+            /*
+            // this slows down firefox and edge significantly
+            // since it requires to use innerHTML(), instead of innerText()
+
             // if the value has not changed, skip DOM update
             //if(series.last === value) return;
 
@@ -2205,15 +2248,48 @@
                     else s += '<i class="fa fa-angle-left" style="width: 8px; text-align: center; overflow: hidden; vertical-align: middle;"></i>';
                 }
                 else s += '<i class="fa fa-angle-right" style="width: 8px; text-align: center; overflow: hidden; vertical-align: middle;"></i>';
+
                 series.last = v;
             }
             else {
-                s = r = value;
+                if(value === null)
+                    s = r = '';
+                else
+                    s = r = value;
+
                 series.last = value;
             }
+            */
 
-            if(series.value !== null) series.value.innerHTML = s;
-            if(series.user !== null) series.user.innerHTML = r;
+            var s = this.legendFormatValue(value);
+
+            // caching: do not update the update to show the same value again
+            if(s === series.last_shown_value) return;
+            series.last_shown_value = s;
+
+            if(series.value !== null) series.value.innerText = s;
+            if(series.user !== null) series.user.innerText = s;
+        };
+
+        this.__legendSetDateString = function(date) {
+            if(date !== this.__last_shown_legend_date) {
+                this.element_legend_childs.title_date.innerText = date;
+                this.__last_shown_legend_date = date;
+            }
+        };
+
+        this.__legendSetTimeString = function(time) {
+            if(time !== this.__last_shown_legend_time) {
+                this.element_legend_childs.title_time.innerText = time;
+                this.__last_shown_legend_time = time;
+            }
+        };
+
+        this.__legendSetUnitsString = function(units) {
+            if(units !== this.__last_shown_legend_units) {
+                this.element_legend_childs.title_units.innerText = units;
+                this.__last_shown_legend_units = units;
+            }
         };
 
         this.legendSetDate = function(ms) {
@@ -2225,24 +2301,24 @@
             var d = new Date(ms);
 
             if(this.element_legend_childs.title_date)
-                this.element_legend_childs.title_date.innerHTML = d.toLocaleDateString();
+                this.__legendSetDateString(d.toLocaleDateString());
 
             if(this.element_legend_childs.title_time)
-                this.element_legend_childs.title_time.innerHTML = d.toLocaleTimeString();
+                this.__legendSetTimeString(d.toLocaleTimeString());
 
             if(this.element_legend_childs.title_units)
-                this.element_legend_childs.title_units.innerHTML = this.units;
+                this.__legendSetUnitsString(this.units)
         };
 
         this.legendShowUndefined = function() {
             if(this.element_legend_childs.title_date)
-                this.element_legend_childs.title_date.innerHTML = '&nbsp;';
+                this.__legendSetDateString(' ');
 
             if(this.element_legend_childs.title_time)
-                this.element_legend_childs.title_time.innerHTML = this.chart.name;
+                this.__legendSetTimeString(this.chart.name);
 
             if(this.element_legend_childs.title_units)
-                this.element_legend_childs.title_units.innerHTML = '&nbsp;';
+                this.__legendSetUnitsString(' ')
 
             if(this.data && this.element_legend_childs.series !== null) {
                 var labels = this.data.dimension_names;
@@ -2358,7 +2434,7 @@
         };
 
         this.legendUpdateDOM = function() {
-            var needed = false;
+            var needed = false, dim, keys, len, i;
 
             // check that the legend DOM is up to date for the downloaded dimensions
             if(typeof this.element_legend_childs.series !== 'object' || this.element_legend_childs.series === null) {
@@ -2402,9 +2478,12 @@
             if(this.colors === null) {
                 // this is the first time we update the chart
                 // let's assign colors to all dimensions
-                if(this.library.track_colors() === true)
-                    for(var dim in this.chart.dimensions)
-                        this._chartDimensionColor(this.chart.dimensions[dim].name);
+                if(this.library.track_colors() === true) {
+                    keys = Object.keys(this.chart.dimensions);
+                    len = keys.length;
+                    for(i = 0; i < len ;i++)
+                        this._chartDimensionColor(this.chart.dimensions[keys[i]].name);
+                }
             }
             // we will re-generate the colors for the chart
             // based on the selected dimensions
@@ -2420,10 +2499,12 @@
                 var color = state._chartDimensionColor(name);
 
                 var user_element = null;
-                var user_id = self.data('show-value-of-' + dim + '-at') || null;
+                var user_id = self.data('show-value-of-' + name.toLowerCase() + '-at') || null;
+                if(user_id === null)
+                    user_id = self.data('show-value-of-' + dim.toLowerCase() + '-at') || null;
                 if(user_id !== null) {
                     user_element = document.getElementById(user_id) || null;
-                    if(user_element === null)
+                    if (user_element === null)
                         state.log('Cannot find element with id: ' + user_id);
                 }
 
@@ -2431,7 +2512,8 @@
                     name: document.createElement('span'),
                     value: document.createElement('span'),
                     user: user_element,
-                    last: null
+                    last: null,
+                    last_shown_value: null
                 };
 
                 var label = state.element_legend_childs.series[name];
@@ -2472,18 +2554,7 @@
                     title_date: document.createElement('span'),
                     title_time: document.createElement('span'),
                     title_units: document.createElement('span'),
-                    nano: document.createElement('div'),
-                    nano_options: {
-                        paneClass: 'netdata-legend-series-pane',
-                        sliderClass: 'netdata-legend-series-slider',
-                        contentClass: 'netdata-legend-series-content',
-                        enabledClass: '__enabled',
-                        flashedClass: '__flashed',
-                        activeClass: '__active',
-                        tabIndex: -1,
-                        alwaysVisible: true,
-                        sliderMinHeight: 10
-                    },
+                    perfect_scroller: document.createElement('div'),
                     series: {}
                 };
 
@@ -2491,7 +2562,7 @@
 
                 if(this.library.toolboxPanAndZoom !== null) {
 
-                    function get_pan_and_zoom_step(event) {
+                    var get_pan_and_zoom_step = function(event) {
                         if (event.ctrlKey)
                             return NETDATA.options.current.pan_and_zoom_factor * NETDATA.options.current.pan_and_zoom_factor_multiplier_control;
 
@@ -2503,7 +2574,7 @@
 
                         else
                             return NETDATA.options.current.pan_and_zoom_factor;
-                    }
+                    };
 
                     this.element_legend_childs.toolbox.className += ' netdata-legend-toolbox';
                     this.element.appendChild(this.element_legend_childs.toolbox);
@@ -2681,11 +2752,11 @@
 
                 this.element_legend.appendChild(document.createElement('br'));
 
-                this.element_legend_childs.nano.className = 'netdata-legend-series';
-                this.element_legend.appendChild(this.element_legend_childs.nano);
+                this.element_legend_childs.perfect_scroller.className = 'netdata-legend-series';
+                this.element_legend.appendChild(this.element_legend_childs.perfect_scroller);
 
                 content.className = 'netdata-legend-series-content';
-                this.element_legend_childs.nano.appendChild(content);
+                this.element_legend_childs.perfect_scroller.appendChild(content);
 
                 if(NETDATA.options.current.show_help === true)
                     $(content).popover({
@@ -2713,8 +2784,7 @@
                     title_date: null,
                     title_time: null,
                     title_units: null,
-                    nano: null,
-                    nano_options: null,
+                    perfect_scroller: null,
                     series: {}
                 };
             }
@@ -2724,13 +2794,15 @@
                 if(this.debug === true)
                     this.log('labels from data: "' + this.element_legend_childs.series.labels_key + '"');
 
-                for(var i = 0, len = this.data.dimension_names.length; i < len ;i++) {
+                for(i = 0, len = this.data.dimension_names.length; i < len ;i++) {
                     genLabel(this, content, this.data.dimension_ids[i], this.data.dimension_names[i], i);
                 }
             }
             else {
                 var tmp = new Array();
-                for(var dim in this.chart.dimensions) {
+                keys = Object.keys(this.chart.dimensions);
+                for(i = 0, len = keys.length; i < len ;i++) {
+                    dim = keys[i];
                     tmp.push(this.chart.dimensions[dim].name);
                     genLabel(this, content, dim, this.chart.dimensions[dim].name, i);
                 }
@@ -2749,8 +2821,22 @@
             this.element_legend_childs.hidden = document.createElement('div');
             el.appendChild(this.element_legend_childs.hidden);
 
-            if(this.element_legend_childs.nano !== null && this.element_legend_childs.nano_options !== null)
-                $(this.element_legend_childs.nano).nanoScroller(this.element_legend_childs.nano_options);
+            if(this.element_legend_childs.perfect_scroller !== null) {
+                Ps.initialize(this.element_legend_childs.perfect_scroller, {
+                    wheelSpeed: 0.2,
+                    wheelPropagation: true,
+                    swipePropagation: true,
+                    minScrollbarLength: null,
+                    maxScrollbarLength: null,
+                    useBothWheelAxes: false,
+                    suppressScrollX: true,
+                    suppressScrollY: false,
+                    scrollXMarginOffset: 0,
+                    scrollYMarginOffset: 0,
+                    theme: 'default'
+                });
+                Ps.update(this.element_legend_childs.perfect_scroller);
+            }
 
             this.legendShowLatestValues();
         };
@@ -2861,7 +2947,12 @@
             this.data_url += "&format="  + this.library.format();
             this.data_url += "&points="  + (this.data_points * points_multiplier).toString();
             this.data_url += "&group="   + this.method;
-            this.data_url += "&options=" + this.library.options(this);
+
+            if(this.override_options !== null)
+                this.data_url += "&options=" + this.override_options.toString();
+            else
+                this.data_url += "&options=" + this.library.options(this);
+
             this.data_url += '|jsonwrap';
 
             if(NETDATA.options.current.eliminate_zero_dimensions === true)
@@ -2900,7 +2991,7 @@
             this.updates_since_last_unhide++;
             this.updates_since_last_creation++;
 
-            var started = new Date().getTime();
+            var started = Date.now();
 
             // if the result is JSON, find the latest update-every
             this.data_update_every = data.view_update_every * 1000;
@@ -2978,7 +3069,7 @@
                 NETDATA.globalSelectionSync.stop();
 
             // update the performance counters
-            var now = new Date().getTime();
+            var now = Date.now();
             this.tm.last_updated = now;
 
             // don't update last_autorefreshed if this chart is
@@ -2996,7 +3087,7 @@
             NETDATA.options.auto_refresher_fast_weight += this.refresh_dt_ms;
 
             if(this.refresh_dt_element !== null)
-                this.refresh_dt_element.innerHTML = this.refresh_dt_ms.toString();
+                this.refresh_dt_element.innerText = this.refresh_dt_ms.toString();
         };
 
         this.updateChart = function(callback) {
@@ -3007,8 +3098,10 @@
                 if(this.debug === true)
                     this.log('I am already updating...');
 
-                if(typeof callback === 'function') callback();
-                return false;
+                if(typeof callback === 'function')
+                    return callback();
+
+                return;
             }
 
             // due to late initialization of charts and libraries
@@ -3017,29 +3110,37 @@
                 if(this.debug === true)
                     this.log('I am not enabled');
 
-                if(typeof callback === 'function') callback();
-                return false;
+                if(typeof callback === 'function')
+                    return callback();
+
+                return;
             }
 
             if(canBeRendered() === false) {
-                if(typeof callback === 'function') callback();
-                return false;
+                if(typeof callback === 'function')
+                    return callback();
+
+                return;
             }
 
-            if(this.chart === null) {
-                this.getChart(function() { that.updateChart(callback); });
-                return false;
-            }
+            if(this.chart === null)
+                return this.getChart(function() {
+                    return that.updateChart(callback);
+                });
 
             if(this.library.initialized === false) {
                 if(this.library.enabled === true) {
-                    this.library.initialize(function() { that.updateChart(callback); });
-                    return false;
+                    return this.library.initialize(function () {
+                        return that.updateChart(callback);
+                    });
                 }
                 else {
                     error('chart library "' + this.library_name + '" is not available.');
-                    if(typeof callback === 'function') callback();
-                    return false;
+
+                    if(typeof callback === 'function')
+                        return callback();
+
+                    return;
                 }
             }
 
@@ -3069,6 +3170,7 @@
             })
             .done(function(data) {
                 that.xhr = undefined;
+                that.retries_on_data_failures = 0;
 
                 if(that.debug === true)
                     that.log('data received. updating chart.');
@@ -3078,18 +3180,28 @@
             .fail(function(msg) {
                 that.xhr = undefined;
 
-                if(msg.statusText !== 'abort')
-                    error('data download failed for url: ' + that.data_url);
+                if(msg.statusText !== 'abort') {
+                    that.retries_on_data_failures++;
+                    if(that.retries_on_data_failures > NETDATA.options.current.retries_on_data_failures) {
+                        // that.log('failed ' + that.retries_on_data_failures.toString() + ' times - giving up');
+                        that.retries_on_data_failures = 0;
+                        error('data download failed for url: ' + that.data_url);
+                    }
+                    else {
+                        that.tm.last_autorefreshed = Date.now();
+                        // that.log('failed ' + that.retries_on_data_failures.toString() + ' times, but I will retry');
+                    }
+                }
             })
             .always(function() {
                 that.xhr = undefined;
 
                 NETDATA.statistics.refreshes_active--;
                 that._updating = false;
-                if(typeof callback === 'function') callback();
-            });
 
-            return true;
+                if(typeof callback === 'function')
+                    return callback();
+            });
         };
 
         this.isVisible = function(nocache) {
@@ -3103,7 +3215,7 @@
             if(nocache === false && this.tm.last_visible_check > NETDATA.options.last_page_scroll)
                 return this.___isVisible___;
 
-            this.tm.last_visible_check = new Date().getTime();
+            this.tm.last_visible_check = Date.now();
 
             var wh = window.innerHeight;
             var x = this.element.getBoundingClientRect();
@@ -3146,7 +3258,7 @@
         };
 
         this.canBeAutoRefreshed = function() {
-            var now = new Date().getTime();
+            var now = Date.now();
 
             if(this.running === true) {
                 if(this.debug === true)
@@ -3253,12 +3365,12 @@
                     state.running = false;
 
                     if(typeof callback !== 'undefined')
-                        callback();
+                        return callback();
                 });
             }
             else {
                 if(typeof callback !== 'undefined')
-                    callback();
+                    return callback();
             }
         };
 
@@ -3267,7 +3379,7 @@
             this.chart_url = chart.url;
             this.data_update_every = chart.update_every * 1000;
             this.data_points = Math.round(this.chartWidth() / this.chartPixelsPerPoint());
-            this.tm.last_info_downloaded = new Date().getTime();
+            this.tm.last_info_downloaded = Date.now();
 
             if(this.title === null)
                 this.title = chart.title;
@@ -3281,7 +3393,9 @@
             this.chart = NETDATA.chartRegistry.get(this.host, this.id);
             if(this.chart) {
                 this._defaultsFromDownloadedChart(this.chart);
-                if(typeof callback === 'function') callback();
+
+                if(typeof callback === 'function')
+                    return callback();
             }
             else {
                 this.chart_url = "/api/v1/chart?chart=" + this.id;
@@ -3305,7 +3419,8 @@
                     error('chart not found on url "' + that.chart_url + '"');
                 })
                 .always(function() {
-                    if(typeof callback === 'function') callback();
+                    if(typeof callback === 'function')
+                        return callback();
                 });
             }
         };
@@ -3366,7 +3481,7 @@
             script.src = NETDATA.jQuery;
 
             // script.onabort = onError;
-            script.onerror = function(err, t) { NETDATA.error(101, NETDATA.jQuery); };
+            script.onerror = function() { NETDATA.error(101, NETDATA.jQuery); };
             if(typeof callback === "function")
                 script.onload = callback;
 
@@ -3374,7 +3489,7 @@
             s.parentNode.insertBefore(script, s);
         }
         else if(typeof callback === "function")
-            callback();
+            return callback();
     };
 
     NETDATA._loadCSS = function(filename) {
@@ -3451,10 +3566,12 @@
     };
 
     NETDATA.pause = function(callback) {
-        if(NETDATA.options.pause === true)
-            callback();
-        else
-            NETDATA.options.pauseCallback = callback;
+        if(typeof callback === 'function') {
+            if (NETDATA.options.pause === true)
+                return callback();
+            else
+                NETDATA.options.pauseCallback = callback;
+        }
     };
 
     NETDATA.unpause = function() {
@@ -3617,7 +3734,7 @@
     };
 
     NETDATA.parseDom = function(callback) {
-        NETDATA.options.last_page_scroll = new Date().getTime();
+        NETDATA.options.last_page_scroll = Date.now();
         NETDATA.options.updated_dom = false;
 
         var targets = $('div[data-netdata]'); //.filter(':visible');
@@ -3633,7 +3750,8 @@
             NETDATA.options.targets.push(NETDATA.chartState(targets[len]));
         }
 
-        if(typeof callback === 'function') callback();
+        if(typeof callback === 'function')
+            return callback();
     };
 
     // this is the main function - where everything starts
@@ -3709,13 +3827,13 @@
             })
             .always(function() {
                 if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.peity.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -3771,13 +3889,13 @@
             })
             .always(function() {
                 if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.sparkline.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -3793,7 +3911,7 @@
         var self = $(state.element);
         var type = self.data('sparkline-type') || 'line';
         var lineColor = self.data('sparkline-linecolor') || state.chartColors()[0];
-        var fillColor = self.data('sparkline-fillcolor') || (state.chart.chart_type === 'line')?NETDATA.themes.current.background:NETDATA.colorLuminance(lineColor, NETDATA.chartDefaults.fill_luminance);
+        var fillColor = self.data('sparkline-fillcolor') || ((state.chart.chart_type === 'line')?NETDATA.themes.current.background:NETDATA.colorLuminance(lineColor, NETDATA.chartDefaults.fill_luminance));
         var chartRangeMin = self.data('sparkline-chartrangemin') || undefined;
         var chartRangeMax = self.data('sparkline-chartrangemax') || undefined;
         var composite = self.data('sparkline-composite') || undefined;
@@ -3840,6 +3958,8 @@
         if(spotColor === 'disable') spotColor='';
         if(minSpotColor === 'disable') minSpotColor='';
         if(maxSpotColor === 'disable') maxSpotColor='';
+
+        // state.log('sparkline type ' + type + ', lineColor: ' + lineColor + ', fillColor: ' + fillColor);
 
         state.sparkline_options = {
             type: type,
@@ -3956,7 +4076,7 @@
         })
         .always(function() {
             if(typeof callback === "function")
-                callback();
+                return callback();
         });
     };
 
@@ -3979,13 +4099,13 @@
                 if(NETDATA.chartLibraries.dygraph.enabled === true && NETDATA.options.current.smooth_plot === true)
                     NETDATA.dygraphSmoothInitialize(callback);
                 else if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.dygraph.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4070,7 +4190,7 @@
             dygraph.updateOptions(options);
         }
 
-        state.dygraph_last_rendered = new Date().getTime();
+        state.dygraph_last_rendered = Date.now();
         return true;
     };
 
@@ -4149,9 +4269,9 @@
             strokeBorderColor: self.data('dygraph-strokebordercolor') || NETDATA.themes.current.background,
             strokeBorderWidth: self.data('dygraph-strokeborderwidth') || (chart_type === 'stacked')?0.0:0.0,
 
-            fillGraph: self.data('dygraph-fillgraph') || (chart_type === 'area' || chart_type === 'stacked')?true:false,
-            fillAlpha: self.data('dygraph-fillalpha') || (chart_type === 'stacked')?NETDATA.options.current.color_fill_opacity_stacked:NETDATA.options.current.color_fill_opacity_area,
-            stackedGraph: self.data('dygraph-stackedgraph') || (chart_type === 'stacked')?true:false,
+            fillGraph: self.data('dygraph-fillgraph') || ((chart_type === 'area' || chart_type === 'stacked')?true:false),
+            fillAlpha: self.data('dygraph-fillalpha') || ((chart_type === 'stacked')?NETDATA.options.current.color_fill_opacity_stacked:NETDATA.options.current.color_fill_opacity_area),
+            stackedGraph: self.data('dygraph-stackedgraph') || ((chart_type === 'stacked')?true:false),
             stackedGraphNaNFill: self.data('dygraph-stackedgraphnanfill') || 'none',
 
             drawAxis: self.data('dygraph-drawaxis') || true,
@@ -4183,9 +4303,12 @@
                         return NETDATA.zeropad(d.getHours()) + ":" + NETDATA.zeropad(d.getMinutes()) + ":" + NETDATA.zeropad(d.getSeconds());
                     },
                     valueFormatter: function (ms) {
-                        var d = new Date(ms);
-                        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
-                        // return NETDATA.zeropad(d.getHours()) + ":" + NETDATA.zeropad(d.getMinutes()) + ":" + NETDATA.zeropad(d.getSeconds());
+                        //var d = new Date(ms);
+                        //return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+
+                        // no need to return anything here
+                        return ' ';
+
                     }
                 },
                 y: {
@@ -4211,8 +4334,10 @@
                     var i = data.series.length;
                     while(i--) {
                         var series = data.series[i];
-                        if(!series.isVisible) continue;
-                        state.legendSetLabelValue(series.label, series.y);
+                        if(series.isVisible === true)
+                            state.legendSetLabelValue(series.label, series.y);
+                        else
+                            state.legendSetLabelValue(series.label, null);
                     }
                 }
 
@@ -4430,7 +4555,7 @@
 
                         // http://dygraphs.com/gallery/interaction-api.js
                         var normal_def;
-                        if(typeof event.wheelDelta === 'number' && event.wheelDelta != NaN)
+                        if(typeof event.wheelDelta === 'number' && !isNaN(event.wheelDelta))
                             // chrome
                             normal_def = event.wheelDelta / 40;
                         else
@@ -4485,7 +4610,7 @@
                     // the internal default of dygraphs
                     context.touchDirections = { x: true, y: false };
 
-                    state.dygraph_last_touch_start = new Date().getTime();
+                    state.dygraph_last_touch_start = Date.now();
                     state.dygraph_last_touch_move = 0;
 
                     if(typeof event.touches[0].pageX === 'number')
@@ -4500,7 +4625,7 @@
                     state.dygraph_user_action = true;
                     Dygraph.defaultInteractionModel.touchmove(event, dygraph, context);
 
-                    state.dygraph_last_touch_move = new Date().getTime();
+                    state.dygraph_last_touch_move = Date.now();
                 },
                 touchend: function(event, dygraph, context) {
                     if(NETDATA.options.debug.dygraph === true || state.debug === true)
@@ -4519,7 +4644,7 @@
                     }
 
                     // if it was double tap within double click time, reset the charts
-                    var now = new Date().getTime();
+                    var now = Date.now();
                     if(typeof state.dygraph_last_touch_end !== 'undefined') {
                         if(state.dygraph_last_touch_move === 0) {
                             var dt = now - state.dygraph_last_touch_end;
@@ -4560,7 +4685,7 @@
 
         state.dygraph_force_zoom = false;
         state.dygraph_user_action = false;
-        state.dygraph_last_rendered = new Date().getTime();
+        state.dygraph_last_rendered = Date.now();
 
         if(typeof state.dygraph_instance.axes_[0].extremeRange !== 'undefined') {
             state.__commonMin = self.data('common-min') || null;
@@ -4591,7 +4716,7 @@
                 else {
                     NETDATA.chartLibraries.morris.enabled = false;
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 }
             }
             else {
@@ -4612,14 +4737,14 @@
                 })
                 .always(function() {
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 });
             }
         }
         else {
             NETDATA.chartLibraries.morris.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4678,13 +4803,13 @@
             })
             .always(function() {
                 if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.raphael.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4722,7 +4847,7 @@
                 else {
                     NETDATA.chartLibraries.c3.enabled = false;
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 }
             }
             else {
@@ -4743,14 +4868,14 @@
                 })
                 .always(function() {
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 });
             }
         }
         else {
             NETDATA.chartLibraries.c3.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4842,13 +4967,13 @@
             })
             .always(function() {
                 if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.d3.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4882,13 +5007,13 @@
                 NETDATA.chartLibraries.google.enabled = false;
                 NETDATA.error(100, NETDATA.google_js);
                 if(typeof callback === "function")
-                    callback();
+                    return callback();
             });
         }
         else {
             NETDATA.chartLibraries.google.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -4992,14 +5117,28 @@
 
     // ----------------------------------------------------------------------------------------------------------------
 
-    NETDATA.percentFromValueMax = function(value, max) {
-        if(value === null) value = 0;
+    NETDATA.easypiechartPercentFromValueMinMax = function(value, min, max) {
+        if(typeof value !== 'number') value = 0;
+        if(typeof min !== 'number') min = 0;
+        if(typeof max !== 'number') max = 0;
+
+        if(min > value) min = value;
         if(max < value) max = value;
 
+        // make sure it is zero based
+        if(min > 0) min = 0;
+        if(max < 0) max = 0;
+
         var pcent = 0;
-        if(max !== 0) {
-            pcent = Math.round(value * 100 / max);
-            if(pcent === 0 && value > 0) pcent = 1;
+        if(value >= 0) {
+            if(max !== 0)
+                pcent = Math.round(value * 100 / max);
+            if(pcent === 0) pcent = 0.1;
+        }
+        else {
+            if(min !== 0)
+                pcent = Math.round(-value * 100 / min);
+            if(pcent === 0) pcent = -0.1;
         }
 
         return pcent;
@@ -5025,13 +5164,13 @@
                 })
                 .always(function() {
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 })
         }
         else {
             NETDATA.chartLibraries.easypiechart.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -5047,7 +5186,7 @@
             NETDATA.easypiechartChartUpdate(state, state.data);
         }
         else {
-            state.easyPieChartLabel.innerHTML = state.legendFormatValue(null);
+            state.easyPieChartLabel.innerText = state.legendFormatValue(null);
             state.easyPieChart_instance.update(0);
         }
         state.easyPieChart_instance.enableAnimation();
@@ -5072,12 +5211,13 @@
         }
 
         var value = state.data.result[state.data.result.length - 1 - slot];
+        var min = (state.easyPieChartMin === null)?NETDATA.commonMin.get(state):state.easyPieChartMin;
         var max = (state.easyPieChartMax === null)?NETDATA.commonMax.get(state):state.easyPieChartMax;
-        var pcent = NETDATA.percentFromValueMax(value, max);
+        var pcent = NETDATA.easypiechartPercentFromValueMinMax(value, min, max);
 
         state.easyPieChartEvent.value = value;
         state.easyPieChartEvent.pcent = pcent;
-        state.easyPieChartLabel.innerHTML = state.legendFormatValue(value);
+        state.easyPieChartLabel.innerText = state.legendFormatValue(value);
 
         if(state.easyPieChartEvent.timer === null) {
             state.easyPieChart_instance.disableAnimation();
@@ -5092,20 +5232,20 @@
     };
 
     NETDATA.easypiechartChartUpdate = function(state, data) {
-        var value, max, pcent;
+        var value, min, max, pcent;
 
         if(NETDATA.globalPanAndZoom.isActive() === true || state.isAutoRefreshable() === false) {
             value = null;
-            max = 0;
             pcent = 0;
         }
         else {
             value = data.result[0];
+            min = (state.easyPieChartMin === null)?NETDATA.commonMin.get(state):state.easyPieChartMin;
             max = (state.easyPieChartMax === null)?NETDATA.commonMax.get(state):state.easyPieChartMax;
-            pcent = NETDATA.percentFromValueMax(value, max);
+            pcent = NETDATA.easypiechartPercentFromValueMinMax(value, min, max);
         }
 
-        state.easyPieChartLabel.innerHTML = state.legendFormatValue(value);
+        state.easyPieChartLabel.innerText = state.legendFormatValue(value);
         state.easyPieChart_instance.update(pcent);
         return true;
     };
@@ -5115,8 +5255,16 @@
         var chart = $(state.element_chart);
 
         var value = data.result[0];
+        var min = self.data('easypiechart-min-value') || null;
         var max = self.data('easypiechart-max-value') || null;
         var adjust = self.data('easypiechart-adjust') || null;
+
+        if(min === null) {
+            min = NETDATA.commonMin.get(state);
+            state.easyPieChartMin = null;
+        }
+        else
+            state.easyPieChartMin = min;
 
         if(max === null) {
             max = NETDATA.commonMax.get(state);
@@ -5125,7 +5273,7 @@
         else
             state.easyPieChartMax = max;
 
-        var pcent = NETDATA.percentFromValueMax(value, max);
+        var pcent = NETDATA.easypiechartPercentFromValueMinMax(value, min, max);
 
         chart.data('data-percent', pcent);
 
@@ -5147,7 +5295,7 @@
         var valuetop = Math.round((size - valuefontsize - (size / 40)) / 2);
         state.easyPieChartLabel = document.createElement('span');
         state.easyPieChartLabel.className = 'easyPieChartLabel';
-        state.easyPieChartLabel.innerHTML = state.legendFormatValue(value);
+        state.easyPieChartLabel.innerText = state.legendFormatValue(value);
         state.easyPieChartLabel.style.fontSize = valuefontsize + 'px';
         state.easyPieChartLabel.style.top = valuetop.toString() + 'px';
         state.element_chart.appendChild(state.easyPieChartLabel);
@@ -5156,7 +5304,7 @@
         var titletop = Math.round(valuetop - (titlefontsize * 2) - (size / 40));
         state.easyPieChartTitle = document.createElement('span');
         state.easyPieChartTitle.className = 'easyPieChartTitle';
-        state.easyPieChartTitle.innerHTML = state.title;
+        state.easyPieChartTitle.innerText = state.title;
         state.easyPieChartTitle.style.fontSize = titlefontsize + 'px';
         state.easyPieChartTitle.style.lineHeight = titlefontsize + 'px';
         state.easyPieChartTitle.style.top = titletop.toString() + 'px';
@@ -5166,7 +5314,7 @@
         var unittop = Math.round(valuetop + (valuefontsize + unitfontsize) + (size / 40));
         state.easyPieChartUnits = document.createElement('span');
         state.easyPieChartUnits.className = 'easyPieChartUnits';
-        state.easyPieChartUnits.innerHTML = state.units;
+        state.easyPieChartUnits.innerText = state.units;
         state.easyPieChartUnits.style.fontSize = unitfontsize + 'px';
         state.easyPieChartUnits.style.top = unittop.toString() + 'px';
         state.element_chart.appendChild(state.easyPieChartUnits);
@@ -5191,7 +5339,7 @@
             trackWidth: self.data('easypiechart-trackwidth') || undefined,
             size: self.data('easypiechart-size') || size,
             rotate: self.data('easypiechart-rotate') || 0,
-            animate: self.data('easypiechart-rotate') || {duration: 500, enabled: true},
+            animate: self.data('easypiechart-animate') || {duration: 500, enabled: true},
             easing: self.data('easypiechart-easing') || undefined
         });
 
@@ -5228,13 +5376,13 @@
                 })
                 .always(function() {
                     if(typeof callback === "function")
-                        callback();
+                        return callback();
                 })
         }
         else {
             NETDATA.chartLibraries.gauge.enabled = false;
             if(typeof callback === "function")
-                callback();
+                return callback();
         }
     };
 
@@ -5262,7 +5410,7 @@
             min = max;
             max = t;
         }
-        else if(min == max)
+        else if(min === max)
             max = min + 1;
 
         // gauge.js has an issue if the needle
@@ -5290,15 +5438,15 @@
     NETDATA.gaugeSetLabels = function(state, value, min, max) {
         if(state.___gaugeOld__.valueLabel !== value) {
             state.___gaugeOld__.valueLabel = value;
-            state.gaugeChartLabel.innerHTML = state.legendFormatValue(value);
+            state.gaugeChartLabel.innerText = state.legendFormatValue(value);
         }
         if(state.___gaugeOld__.minLabel !== min) {
             state.___gaugeOld__.minLabel = min;
-            state.gaugeChartMin.innerHTML = state.legendFormatValue(min);
+            state.gaugeChartMin.innerText = state.legendFormatValue(min);
         }
         if(state.___gaugeOld__.maxLabel !== max) {
             state.___gaugeOld__.maxLabel = max;
-            state.gaugeChartMax.innerHTML = state.legendFormatValue(max);
+            state.gaugeChartMax.innerText = state.legendFormatValue(max);
         }
     };
 
@@ -5341,12 +5489,16 @@
         }
 
         var value = state.data.result[state.data.result.length - 1 - slot];
+        var min = (state.gaugeMin === null)?NETDATA.commonMin.get(state):state.gaugeMin;
         var max = (state.gaugeMax === null)?NETDATA.commonMax.get(state):state.gaugeMax;
-        var min = 0;
+
+        // make sure it is zero based
+        if(min > 0) min = 0;
+        if(max < 0) max = 0;
 
         state.gaugeEvent.value = value;
-        state.gaugeEvent.max = max;
         state.gaugeEvent.min = min;
+        state.gaugeEvent.max = max;
         NETDATA.gaugeSetLabels(state, value, min, max);
 
         if(state.gaugeEvent.timer === null) {
@@ -5372,9 +5524,15 @@
         }
         else {
             value = data.result[0];
-            min = 0;
+            min = (state.gaugeMin === null)?NETDATA.commonMin.get(state):state.gaugeMin;
             max = (state.gaugeMax === null)?NETDATA.commonMax.get(state):state.gaugeMax;
+            if(value < min) min = value;
             if(value > max) max = value;
+
+            // make sure it is zero based
+            if(min > 0) min = 0;
+            if(max < 0) max = 0;
+
             NETDATA.gaugeSetLabels(state, value, min, max);
         }
 
@@ -5387,6 +5545,7 @@
         // var chart = $(state.element_chart);
 
         var value = data.result[0];
+        var min = self.data('gauge-min-value') || null;
         var max = self.data('gauge-max-value') || null;
         var adjust = self.data('gauge-adjust') || null;
         var pointerColor = self.data('gauge-pointer-color') || NETDATA.themes.current.gauge_pointer;
@@ -5395,12 +5554,23 @@
         var stopColor = self.data('gauge-stop-color') || void 0;
         var generateGradient = self.data('gauge-generate-gradient') || false;
 
+        if(min === null) {
+            min = NETDATA.commonMin.get(state);
+            state.gaugeMin = null;
+        }
+        else
+            state.gaugeMin = min;
+
         if(max === null) {
             max = NETDATA.commonMax.get(state);
             state.gaugeMax = null;
         }
         else
             state.gaugeMax = max;
+
+        // make sure it is zero based
+        if(min > 0) min = 0;
+        if(max < 0) max = 0;
 
         var width = state.chartWidth(), height = state.chartHeight(); //, ratio = 1.5;
         //switch(adjust) {
@@ -5486,7 +5656,7 @@
         var titletop = 0;
         state.gaugeChartTitle = document.createElement('span');
         state.gaugeChartTitle.className = 'gaugeChartTitle';
-        state.gaugeChartTitle.innerHTML = state.title;
+        state.gaugeChartTitle.innerText = state.title;
         state.gaugeChartTitle.style.fontSize = titlefontsize + 'px';
         state.gaugeChartTitle.style.lineHeight = titlefontsize + 'px';
         state.gaugeChartTitle.style.top = titletop.toString() + 'px';
@@ -5495,7 +5665,7 @@
         var unitfontsize = Math.round(titlefontsize * 0.9);
         state.gaugeChartUnits = document.createElement('span');
         state.gaugeChartUnits.className = 'gaugeChartUnits';
-        state.gaugeChartUnits.innerHTML = state.units;
+        state.gaugeChartUnits.innerText = state.units;
         state.gaugeChartUnits.style.fontSize = unitfontsize + 'px';
         state.element_chart.appendChild(state.gaugeChartUnits);
 
@@ -5519,7 +5689,7 @@
 
         state.___gaugeOld__ = {
             value: value,
-            min: 0,
+            min: min,
             max: max,
             valueLabel: null,
             minLabel: null,
@@ -5531,8 +5701,8 @@
         state.gauge_instance.maxValue = 100;
 
         NETDATA.gaugeAnimation(state, animate);
-        NETDATA.gaugeSet(state, value, 0, max);
-        NETDATA.gaugeSetLabels(state, value, 0, max);
+        NETDATA.gaugeSet(state, value, min, max);
+        NETDATA.gaugeSetLabels(state, value, min, max);
         NETDATA.gaugeAnimation(state, true);
         return true;
     };
@@ -5767,7 +5937,7 @@
             async: false,
             isAlreadyLoaded: function() {
                 // check if bootstrap is loaded
-                if(typeof $().emulateTransitionEnd == 'function')
+                if(typeof $().emulateTransitionEnd === 'function')
                     return true;
                 else {
                     if(typeof netdataNoBootstrap !== 'undefined' && netdataNoBootstrap)
@@ -5778,7 +5948,7 @@
             }
         },
         {
-            url: NETDATA.serverDefault + 'lib/jquery.nanoscroller-0.8.7.min.js',
+            url: NETDATA.serverDefault + 'lib/perfect-scrollbar-0.6.15.min.js',
             isAlreadyLoaded: function() { return false; }
         }
     ];
@@ -5807,7 +5977,7 @@
     NETDATA.loadRequiredJs = function(index, callback) {
         if(index >= NETDATA.requiredJs.length) {
             if(typeof callback === 'function')
-                callback();
+                return callback();
             return;
         }
 
@@ -5899,7 +6069,7 @@
             var value = entry.value;
             if(NETDATA.alarms.current !== null) {
                 var t = NETDATA.alarms.current.alarms[entry.chart + '.' + entry.name];
-                if(typeof t !== 'undefined' && entry.status == t.status)
+                if(typeof t !== 'undefined' && entry.status === t.status)
                     value = t.value;
             }
 
@@ -6111,13 +6281,13 @@
                         NETDATA.alarms.first_notification_id = data.latest_alarm_log_unique_id;
 
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(415, NETDATA.alarms.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
@@ -6156,23 +6326,21 @@
             })
                 .done(function(data) {
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(416, NETDATA.alarms.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
         init: function() {
-            var host = NETDATA.serverDefault;
-            while(host.slice(-1) === '/')
-                host = host.substring(0, host.length - 1);
-            NETDATA.alarms.server = host;
+            NETDATA.alarms.server = NETDATA.fixHost(NETDATA.serverDefault);
 
-            NETDATA.alarms.last_notification_id = NETDATA.localStorageGet('last_notification_id', NETDATA.alarms.last_notification_id, null);
+            NETDATA.alarms.last_notification_id =
+                NETDATA.localStorageGet('last_notification_id', NETDATA.alarms.last_notification_id, null);
 
             if(NETDATA.alarms.onclick === null)
                 NETDATA.alarms.onclick = NETDATA.alarms.scrollToAlarm;
@@ -6211,7 +6379,7 @@
                 NETDATA.registry.machines = {};
                 NETDATA.registry.machines_array = new Array();
 
-                var now = new Date().getTime();
+                var now = Date.now();
                 var apu = person_urls;
                 var i = apu.length;
                 while(i--) {
@@ -6268,8 +6436,7 @@
         },
 
         hello: function(host, callback) {
-            while(host.slice(-1) === '/')
-                host = host.substring(0, host.length - 1);
+            host = NETDATA.fixHost(host);
 
             // send HELLO to a netdata server:
             // 1. verifies the server is reachable
@@ -6291,13 +6458,13 @@
                     }
 
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(407, host);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
@@ -6334,7 +6501,7 @@
                         }
                         else {
                             if(typeof callback === 'function')
-                                callback(null);
+                                return callback(null);
                         }
                     }
                     else {
@@ -6342,14 +6509,14 @@
                             NETDATA.registry.person_guid = data.person_guid;
 
                         if(typeof callback === 'function')
-                            callback(data.urls);
+                            return callback(data.urls);
                     }
                 })
                 .fail(function() {
                     NETDATA.error(410, NETDATA.registry.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
@@ -6372,13 +6539,13 @@
                     }
 
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(412, NETDATA.registry.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
@@ -6401,13 +6568,13 @@
                     }
 
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(418, NETDATA.registry.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         },
 
@@ -6430,13 +6597,13 @@
                     }
 
                     if(typeof callback === 'function')
-                        callback(data);
+                        return callback(data);
                 })
                 .fail(function() {
                     NETDATA.error(414, NETDATA.registry.server);
 
                     if(typeof callback === 'function')
-                        callback(null);
+                        return callback(null);
                 });
         }
     };
@@ -6465,6 +6632,4 @@
             }
         });
     });
-
-    // window.NETDATA = NETDATA;
-// })(window, document);
+})(window, document);

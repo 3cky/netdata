@@ -1,10 +1,9 @@
-# netdata [![Build Status](https://travis-ci.org/firehol/netdata.svg?branch=master)](https://travis-ci.org/firehol/netdata) [![Coverity Scan Build Status](https://scan.coverity.com/projects/9140/badge.svg)](https://scan.coverity.com/projects/firehol-netdata) [![Docker Pulls](https://img.shields.io/docker/pulls/titpetric/netdata.svg)](https://hub.docker.com/r/titpetric/netdata/)
-
+# netdata [![Build Status](https://travis-ci.org/firehol/netdata.svg?branch=master)](https://travis-ci.org/firehol/netdata) [![Coverity Scan Build Status](https://scan.coverity.com/projects/9140/badge.svg)](https://scan.coverity.com/projects/firehol-netdata) [![Code Climate](https://codeclimate.com/github/firehol/netdata/badges/gpa.svg)](https://codeclimate.com/github/firehol/netdata) [![Docker Pulls](https://img.shields.io/docker/pulls/titpetric/netdata.svg)](https://hub.docker.com/r/titpetric/netdata/)
 > *New to netdata? Here is a live demo: [http://my-netdata.io](http://my-netdata.io)*
 
 **netdata** is a system for **distributed real-time performance and health monitoring**.
 It provides **unparalleled insights, in real-time**, of everything happening on the
-system it runs (including applications such as web, or database servers), using
+system it runs (including applications such as web and database servers), using
 **modern interactive web dashboards**.
 
 _netdata is **fast** and **efficient**, designed to permanently run on all systems
@@ -26,16 +25,20 @@ disrupting their core function._
 ## News
 
 <p align="center">
-<a href="https://octoverse.github.com/" target="_blank"><img src="https://cloud.githubusercontent.com/assets/2662304/18795170/ec321f32-81cb-11e6-92a8-d03492f0b00d.png"/></a>
+Netdata is featured at <b><a href="https://octoverse.github.com/" target="_blank">GitHub's State Of The Octoverse 2016</a></b><br/>
+<a href="https://octoverse.github.com/" target="_blank"><img src="https://cloud.githubusercontent.com/assets/2662304/21743260/23ebe62c-d507-11e6-80c0-76b95f53e464.png"/></a>
 </p>
 
-`Oct 4th, 2016` - **[netdata v1.4.0 released!](https://github.com/firehol/netdata/releases)**
+`Jan 22nd, 2017` - **[netdata v1.5.0 released!](https://github.com/firehol/netdata/releases)**
 
- - the **fastest** netdata ever (with a better look too)
- - improved **IoT** and **containers** support
- - **alarms** improved in almost every way
- - new plugins: softnet netdev, extended TCP metrics, UDPLite, NFS v2, v3 client (server was there already), NFS v4 server & client, APCUPSd, RetroShare
- - improved plugins: mysql, cgroups, hddtemp, sensors, phpfm, tc (QoS)
+ - netdata now runs on **FreeBSD** and **MacOS**
+ - netdata now supports **Graphite**, **OpenTSDB**, **Prometheus** and compatible backends
+ - netdata now monitors **SystemD Services**
+ - new plugins: fping, postgres, varnish, elasticsearch, haproxy, freeradius, mdstat, ISC dhcpd, fail2ban, openvpn, NUMA memory, CPU Idle States, gunicorn, ECC memory errors, IPC semaphores, uptime
+ - improved plugins: netfilter conntrack, mysql/mariadb, ipfs, cpufreq, hddtemp, sensors, nginx, nginx_log, phpfpm, redis, dovecot, containers and cgroups, disk space, apps.plugin, tc (QoS) and almost all internal plugins (memory, IPv4 and IPv6, network interfaces, QoS, etc)
+ - dozens of new and improved alarms (including performance monitoring alarms for mysql)
+ - new alarm notifications: messagebird.com, pagerduty.com, pushbullet.com, twilio.com, hipchat, kafka
+ - dozens more improvements and performance optimizations
 
 ---
 
@@ -48,17 +51,18 @@ disrupting their core function._
  - **Stunning interactive bootstrap dashboards**<br/>
    mouse and touch friendly, in 2 themes: dark, light
    
- - **Blazingly fast**<br/>
+ - **Amazingly fast**<br/>
    responds to all queries in less than 0.5 ms per metric,
-   even on low-end hardware (such as a raspberry pi 1)
+   even on low-end hardware
    
- - **Highly efficient data collection**<br/>
+ - **Highly efficient**<br/>
    collects thousands of metrics per server per second,
-   with just 1% CPU utilization of a single core, a few MB or RAM and no disk I/O at all
+   with just 1% CPU utilization of a single core, a few MB of RAM and no disk I/O at all
    
  - **Sophisticated alarming**<br/>
    supports dynamic thresholds, hysteresis, alarm templates,
-   multiple role-based notification methods (such as slack.com, pushover.net, telegram.org, email)
+   multiple role-based notification methods (such as email, slack.com,
+   pushover.net, pushbullet.com telegram.org, twilio.com, messagebird.com)
    
  - **Extensible**<br/>
    you can monitor anything you can get a metric for,
@@ -68,6 +72,9 @@ disrupting their core function._
  - **Embeddable**<br/>
    it can run anywhere a Linux kernel runs (even IoT)
    and its charts can be embedded on your web pages too
+   
+ - **Customizable**<br/>
+   custom dashboards can be built using simple HTML (no javascript necessary)
    
  - **Zero configuration**<br/>
    auto-detects everything, it can collect up to 5000 metrics
@@ -79,11 +86,12 @@ disrupting their core function._
  - **Zero maintenance**<br/>
    you just run it, it does the rest
    
- - **Custom dashboards**<br/>
-   that can be built using simple HTML (no javascript necessary)
-   
  - **scales to infinity**<br/>
    requiring minimal central resources
+   
+ - **back-ends supported**<br/>
+   can archive its metrics on `graphite` or `opentsdb`, in the same or lower detail
+   (lower: to prevent it from congesting these servers due to the amount of data collected)
 
 ![netdata](https://cloud.githubusercontent.com/assets/2662304/14092712/93b039ea-f551-11e5-822c-beadbf2b2a2e.gif)
 
@@ -102,7 +110,7 @@ This is a list of what it currently monitors:
   usage, interrupts, softirqs, frequency, total and per core
 
 - **Memory**<br/>
-  RAM, swap and kernel memory usage, including KSM the kernel memory deduper
+  RAM, swap and kernel memory usage, KSM (Kernel Samepage Merging), NUMA
 
 - **Disks**<br/>
   per disk: I/O, operations, backlog, utilization, space
@@ -130,11 +138,20 @@ This is a list of what it currently monitors:
   icmp: messages, errors, echos, router, neighbor, MLDv2, group membership,
   break down by type
 
+- **Interprocess Communication - IPC**<br/>
+  such as semaphores and semaphores arrays
+
 - **netfilter / iptables Linux firewall**<br/>
   connections, connection tracker events, errors
 
 - **Linux DDoS protection**<br/>
   SYNPROXY metrics
+
+- **fping** latencies</br>
+  for any number of hosts, showing latency, packets and packet loss
+
+   ![image](https://cloud.githubusercontent.com/assets/2662304/20464811/9517d2b4-af57-11e6-8361-f6cc57541cd7.png)
+
 
 - **Processes**<br/>
   running, blocked, forks, active
@@ -176,6 +193,11 @@ This is a list of what it currently monitors:
   multiple servers, each showing: bandwidth, queries/s, handlers, locks, issues,
   tmp operations, connections, binlog metrics, threads, innodb metrics, and more
 
+- **Postgres databases**<br/>
+  multiple servers, each showing: per database statistics (connections, tuples
+  read - written - returned, transactions, locks), backend processes, indexes,
+  tables, write ahead, background writer and more
+
 - **Redis databases**<br/>
   multiple servers, each showing: operations, hit rate, memory, keys, clients, slaves
 
@@ -190,6 +212,8 @@ This is a list of what it currently monitors:
 
 - **exim email servers**<br/>
   message queue (emails queued)
+
+- **Dovecot** POP3/IMAP servers<br/>
 
 - **IPFS**<br/>
   bandwidth, peers
@@ -228,7 +252,7 @@ It should run on **any Linux** system (including IoT). It has been tested on:
 - Debian
 - Fedora
 - Gentoo
-- OpenSuse
+- openSUSE
 - PLD Linux
 - RedHat Enterprise Linux
 - SUSE

@@ -8,35 +8,29 @@ void netdata_cleanup_and_exit(int ret) {
     error_log_limit_unlimited();
 
     debug(D_EXIT, "Called: netdata_cleanup_and_exit()");
-#ifdef NETDATA_INTERNAL_CHECKS
-    rrdset_free_all();
-#else
-    rrdset_save_all();
-#endif
-    // kill_childs();
 
+    // save the database
+    rrdset_save_all();
+
+    // unlink the pid
     if(pidfile[0]) {
         if(unlink(pidfile) != 0)
             error("Cannot unlink pidfile '%s'.", pidfile);
     }
 
-    info("NetData exiting. Bye bye...");
+#ifdef NETDATA_INTERNAL_CHECKS
+    // kill all childs
+    //kill_childs();
+
+    // free database
+    rrdset_free_all();
+#endif
+
+    info("netdata exiting. Bye bye...");
     exit(ret);
 }
 
-struct netdata_static_thread {
-    char *name;
-
-    char *config_section;
-    char *config_name;
-
-    int enabled;
-
-    pthread_t *thread;
-
-    void (*init_routine) (void);
-    void *(*start_routine) (void *);
-} static_threads[] = {
+struct netdata_static_thread static_threads[] = {
 #ifdef INTERNAL_PLUGIN_NFACCT
 // nfacct requires root access
     // so, we build it as an external plugin with setuid to root
@@ -45,9 +39,17 @@ struct netdata_static_thread {
 
     {"tc",                 "plugins",   "tc",         1, NULL, NULL, tc_main},
     {"idlejitter",         "plugins",   "idlejitter", 1, NULL, NULL, cpuidlejitter_main},
+#if defined(__FreeBSD__)
+    {"freebsd",            "plugins",   "freebsd",    1, NULL, NULL, freebsd_main},
+#elif defined(__APPLE__)
+    {"macos",              "plugins",   "macos",      1, NULL, NULL, macos_main},
+#else
     {"proc",               "plugins",   "proc",       1, NULL, NULL, proc_main},
+    {"diskspace",          "plugins",   "diskspace",  1, NULL, NULL, proc_diskspace_main},
+#endif /* __FreeBSD__, __APPLE__*/
     {"cgroups",            "plugins",   "cgroups",    1, NULL, NULL, cgroups_main},
     {"check",              "plugins",   "checks",     0, NULL, NULL, checks_main},
+    {"backends",            NULL,       NULL,         1, NULL, NULL, backends_main},
     {"health",              NULL,       NULL,         1, NULL, NULL, health_main},
     {"plugins.d",           NULL,       NULL,         1, NULL, NULL, pluginsd_main},
     {"web",                 NULL,       NULL,         1, NULL, NULL, socket_listen_main_multi_threaded},
@@ -149,67 +151,80 @@ int killpid(pid_t pid, int sig)
 
 void kill_childs()
 {
+    error_log_limit_unlimited();
+
     siginfo_t info;
 
     struct web_client *w;
     for(w = web_clients; w ; w = w->next) {
-        debug(D_EXIT, "Stopping web client %s", w->client_ip);
+        info("Stopping web client %s", w->client_ip);
         pthread_cancel(w->thread);
-        pthread_join(w->thread, NULL);
+        // it is detached
+        // pthread_join(w->thread, NULL);
+
+        w->obsolete = 1;
     }
 
     int i;
     for (i = 0; static_threads[i].name != NULL ; i++) {
-        if(static_threads[i].thread) {
-            debug(D_EXIT, "Stopping %s thread", static_threads[i].name);
+        if(static_threads[i].enabled) {
+            info("Stopping %s thread", static_threads[i].name);
             pthread_cancel(*static_threads[i].thread);
-            pthread_join(*static_threads[i].thread, NULL);
-            static_threads[i].thread = NULL;
+            // it is detached
+            // pthread_join(*static_threads[i].thread, NULL);
+
+            static_threads[i].enabled = 0;
         }
     }
 
     if(tc_child_pid) {
-        debug(D_EXIT, "Killing tc-qos-helper procees");
+        info("Killing tc-qos-helper process %d", tc_child_pid);
         if(killpid(tc_child_pid, SIGTERM) != -1)
             waitid(P_PID, (id_t) tc_child_pid, &info, WEXITED);
+
+        tc_child_pid = 0;
     }
-    tc_child_pid = 0;
 
     struct plugind *cd;
     for(cd = pluginsd_root ; cd ; cd = cd->next) {
-        debug(D_EXIT, "Stopping %s plugin thread", cd->id);
-        pthread_cancel(cd->thread);
-        pthread_join(cd->thread, NULL);
+        if(cd->enabled && !cd->obsolete) {
+            info("Stopping %s plugin thread", cd->id);
+            pthread_cancel(cd->thread);
 
-        if(cd->pid && !cd->obsolete) {
-            debug(D_EXIT, "killing %s plugin process", cd->id);
-            if(killpid(cd->pid, SIGTERM) != -1)
-                waitid(P_PID, (id_t) cd->pid, &info, WEXITED);
+            if(cd->pid) {
+                info("killing %s plugin child process pid %d", cd->id, cd->pid);
+                if(killpid(cd->pid, SIGTERM) != -1)
+                    waitid(P_PID, (id_t) cd->pid, &info, WEXITED);
+
+                cd->pid = 0;
+            }
+
+            cd->obsolete = 1;
         }
     }
 
     // if, for any reason there is any child exited
     // catch it here
+    info("Cleaning up an other children");
     waitid(P_PID, 0, &info, WEXITED|WNOHANG);
 
-    debug(D_EXIT, "All threads/childs stopped.");
+    info("All threads/childs stopped.");
 }
 
 struct option_def options[] = {
-    // opt description                                                       arg name                     default value
-    {'c', "Load alternate configuration file",                               "config_file",                          CONFIG_DIR "/" CONFIG_FILENAME},
-    {'D', "Disable fork into background",                                    NULL,                                   NULL},
-    {'h', "Display help message",                                            NULL,                                   NULL},
-    {'P', "File to save a pid while running",                                "FILE",                                 NULL},
-    {'i', "The IP address to listen to.",                                    "address",                              "All addresses"},
-    {'k', "Check daemon configuration.",                                     NULL,                                   NULL},
-    {'p', "Port to listen. Can be from 1 to 65535.",                         "port_number",                          "19999"},
-    {'s', "Path to access host /proc and /sys when running in a container.", "PATH",                                 NULL},
-    {'t', "The frequency in seconds, for data collection. \
-Same as 'update every' config file option.",                                 "seconds",                              "1"},
-    {'u', "System username to run as.",                                      "username",                             "netdata"},
-    {'v', "Version of the program",                                          NULL,                                   NULL},
-    {'W', "vendor options.",                                                 "stacksize=N|unittest|debug_flags=N",   NULL},
+    // opt description                                    arg name       default value
+    { 'c', "Configuration file to load.",                 "filename",    CONFIG_DIR "/" CONFIG_FILENAME},
+    { 'D', "Do not fork. Run in the foreground.",         NULL,          "run in the background"},
+    { 'h', "Display this help message.",                  NULL,          NULL},
+    { 'P', "File to save a pid while running.",           "filename",    "do not save pid to a file"},
+    { 'i', "The IP address to listen to.",                "IP",          "all IP addresses IPv4 and IPv6"},
+    { 'k', "Check health configuration and exit.",        NULL,          NULL},
+    { 'p', "API/Web port to use.",                        "port",        "19999"},
+    { 's', "Prefix for /proc and /sys (for containers).", "path",        "no prefix"},
+    { 't', "The internal clock of netdata.",              "seconds",     "1"},
+    { 'u', "Run as user.",                                "username",    "netdata"},
+    { 'v', "Print netdata version and exit.",             NULL,          NULL},
+    { 'W', "See Advanced options below.",                 "options",     NULL},
 };
 
 void help(int exitcode) {
@@ -231,19 +246,62 @@ void help(int exitcode) {
         }
     }
 
-    fprintf(stream, "SYNOPSIS: netdata [options]\n");
+    if(max_len_arg > 30) max_len_arg = 30;
+    if(max_len_arg < 20) max_len_arg = 20;
+
+    fprintf(stream, "%s", "\n"
+            " ^\n"
+            " |.-.   .-.   .-.   .-.   .  netdata                                         \n"
+            " |   '-'   '-'   '-'   '-'   real-time performance monitoring, done right!   \n"
+            " +----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+--->\n"
+            "\n"
+            " Copyright (C) 2016-2017, Costa Tsaousis <costa@tsaousis.gr>\n"
+            " Released under GNU Public License v3 or later.\n"
+            " All rights reserved.\n"
+            "\n"
+            " Home Page  : https://my-netdata.io\n"
+            " Source Code: https://github.com/firehol/netdata\n"
+            " Wiki / Docs: https://github.com/firehol/netdata/wiki\n"
+            " Support    : https://github.com/firehol/netdata/issues\n"
+            " License    : https://github.com/firehol/netdata/blob/master/LICENSE.md\n"
+            "\n"
+            " Twitter    : https://twitter.com/linuxnetdata\n"
+            " Facebook   : https://www.facebook.com/linuxnetdata/\n"
+            "\n"
+            " netdata is a https://firehol.org project.\n"
+            "\n"
+            "\n"
+    );
+
+    fprintf(stream, " SYNOPSIS: netdata [options]\n");
     fprintf(stream, "\n");
-    fprintf(stream, "Options:\n");
+    fprintf(stream, " Options:\n\n");
 
     // Output options description.
     for( i = 0; i < num_opts; i++ ) {
         fprintf(stream, "  -%c %-*s  %s", options[i].val, max_len_arg, options[i].arg_name ? options[i].arg_name : "", options[i].description);
         if(options[i].default_value) {
-            fprintf(stream, " Default: %s\n", options[i].default_value);
+            fprintf(stream, "\n   %c %-*s  Default: %s\n", ' ', max_len_arg, "", options[i].default_value);
         } else {
             fprintf(stream, "\n");
         }
+        fprintf(stream, "\n");
     }
+
+    fprintf(stream, "\n Advanced options:\n\n"
+            "  -W stacksize=N           Set the stacksize (in bytes).\n\n"
+            "  -W debug_flags=N         Set runtime tracing to debug.log.\n\n"
+            "  -W unittest              Run internal unittests and exit.\n\n"
+            "  -W simple-pattern pattern string\n"
+            "                           Check if string matches pattern and exit.\n\n"
+    );
+
+    fprintf(stream, "\n Signals netdata handles:\n\n"
+            "  - HUP                    Close and reopen log files.\n"
+            "  - USR1                   Save internal DB to disk.\n"
+            "  - USR2                   Reload health configuration.\n"
+            "\n"
+    );
 
     fflush(stream);
     exit(exitcode);
@@ -329,6 +387,9 @@ int main(int argc, char **argv)
                 string_i++;
             }
         }
+        // terminate optstring
+        optstring[string_i] ='\0';
+        optstring[(num_opts *2)] ='\0';
 
         int opt;
         while( (opt = getopt(argc, argv, optstring)) != -1 ) {
@@ -386,10 +447,54 @@ int main(int argc, char **argv)
                             if(unit_test_storage()) exit(1);
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
                             exit(0);
-                        } else if(strncmp(optarg, stacksize_string, strlen(stacksize_string)) == 0) {
+                        }
+                        else if(strcmp(optarg, "simple-pattern") == 0) {
+                            if(optind + 2 > argc) {
+                                fprintf(stderr, "%s", "\nUSAGE: -W simple-pattern 'pattern' 'string'\n\n"
+                                        " Checks if 'pattern' matches the given 'string'.\n"
+                                        " - 'pattern' can be one or more space separated words.\n"
+                                        " - each 'word' can contain one or more asterisks.\n"
+                                        " - words starting with '!' give negative matches.\n"
+                                        " - words are processed left to right\n"
+                                        "\n"
+                                        "Examples:\n"
+                                        "\n"
+                                        " > match all veth interfaces, except veth0:\n"
+                                        "\n"
+                                        "   -W simple-pattern '!veth0 veth*' 'veth12'\n"
+                                        "\n"
+                                        "\n"
+                                        " > match all *.ext files directly in /path/:\n"
+                                        "   (this will not match *.ext files in a subdir of /path/)\n"
+                                        "\n"
+                                        "   -W simple-pattern '!/path/*/*.ext /path/*.ext' '/path/test.ext'\n"
+                                        "\n"
+                                );
+                                exit(1);
+                            }
+
+                            const char *heystack = argv[optind];
+                            const char *needle = argv[optind + 1];
+
+                            SIMPLE_PATTERN *p = simple_pattern_create(heystack
+                                                                      , SIMPLE_PATTERN_EXACT);
+                            int ret = simple_pattern_matches(p, needle);
+                            simple_pattern_free(p);
+
+                            if(ret) {
+                                fprintf(stdout, "RESULT: MATCHED - pattern '%s' matches '%s'\n", heystack, needle);
+                                exit(0);
+                            }
+                            else {
+                                fprintf(stdout, "RESULT: NOT MATCHED - pattern '%s' does not match '%s'\n", heystack, needle);
+                                exit(1);
+                            }
+                        }
+                        else if(strncmp(optarg, stacksize_string, strlen(stacksize_string)) == 0) {
                             optarg += strlen(stacksize_string);
                             config_set("global", "pthread stack size", optarg);
-                        } else if(strncmp(optarg, debug_flags_string, strlen(debug_flags_string)) == 0) {
+                        }
+                        else if(strncmp(optarg, debug_flags_string, strlen(debug_flags_string)) == 0) {
                             optarg += strlen(debug_flags_string);
                             config_set("global", "debug flags",  optarg);
                             debug_flags = strtoull(optarg, NULL, 0);
@@ -462,7 +567,9 @@ int main(int argc, char **argv)
             if(setrlimit(RLIMIT_CORE, &rl) != 0)
                 error("Cannot request unlimited core dumps for debugging... Proceeding anyway...");
 
+#if !(defined(__FreeBSD__) || defined(__APPLE__))
             prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+#endif /* __FreeBSD__ || __APPLE__*/
         }
 
         // --------------------------------------------------------------------
@@ -637,7 +744,9 @@ int main(int argc, char **argv)
         struct rlimit rl = { RLIM_INFINITY, RLIM_INFINITY };
         if(setrlimit(RLIMIT_CORE, &rl) != 0)
             error("Cannot request unlimited core dumps for debugging... Proceeding anyway...");
+#if !(defined(__FreeBSD__) || defined(__APPLE__))
         prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+#endif /* __FreeBSD__ || __APPLE__*/
     }
 #endif /* NETDATA_INTERNAL_CHECKS */
 
@@ -645,8 +754,7 @@ int main(int argc, char **argv)
     if(become_daemon(dont_fork, user) == -1)
         fatal("Cannot daemonize myself.");
 
-    info("NetData started on pid %d", getpid());
-
+    info("netdata started on pid %d.", getpid());
 
     // ------------------------------------------------------------------------
     // get default pthread stack size
@@ -695,7 +803,7 @@ int main(int argc, char **argv)
 
             debug(D_SYSTEM, "Starting thread %s.", st->name);
 
-            if(pthread_create(st->thread, &attr, st->start_routine, NULL))
+            if(pthread_create(st->thread, &attr, st->start_routine, st))
                 error("failed to create new thread for %s.", st->name);
 
             else if(pthread_detach(*st->thread))
@@ -703,6 +811,8 @@ int main(int argc, char **argv)
         }
         else debug(D_SYSTEM, "Not starting thread %s.", st->name);
     }
+
+    info("netdata initialization completed. Enjoy real-time performance monitoring!");
 
     // ------------------------------------------------------------------------
     // block signals while initializing threads.

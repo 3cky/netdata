@@ -157,8 +157,23 @@ static char *strdupz_decoding_octal(const char *string) {
     return buffer;
 }
 
+static inline int is_read_only(const char *s) {
+    if(!s) return 0;
+
+    size_t len = strlen(s);
+    if(len < 2) return 0;
+    if(len == 2) {
+        if(!strcmp(s, "ro")) return 1;
+        return 0;
+    }
+    if(!strncmp(s, "ro,", 3)) return 1;
+    if(!strncmp(&s[len - 3], ",ro", 3)) return 1;
+    if(strstr(s, ",ro,")) return 1;
+    return 0;
+}
+
 // read the whole mountinfo into a linked list
-struct mountinfo *mountinfo_read() {
+struct mountinfo *mountinfo_read(int do_statvfs) {
     char filename[FILENAME_MAX + 1];
     snprintfz(filename, FILENAME_MAX, "%s/proc/self/mountinfo", global_host_prefix);
     procfile *ff = procfile_open(filename, " \t", PROCFILE_FLAG_DEFAULT);
@@ -182,8 +197,8 @@ struct mountinfo *mountinfo_read() {
         mi = mallocz(sizeof(struct mountinfo));
 
         unsigned long w = 0;
-        mi->id = strtoul(procfile_lineword(ff, l, w), NULL, 10); w++;
-        mi->parentid = strtoul(procfile_lineword(ff, l, w), NULL, 10); w++;
+        mi->id = str2ul(procfile_lineword(ff, l, w)); w++;
+        mi->parentid = str2ul(procfile_lineword(ff, l, w)); w++;
 
         char *major = procfile_lineword(ff, l, w), *minor; w++;
         for(minor = major; *minor && *minor != ':' ;minor++) ;
@@ -199,8 +214,8 @@ struct mountinfo *mountinfo_read() {
 
         mi->flags = 0;
 
-        mi->major = strtoul(major, NULL, 10);
-        mi->minor = strtoul(minor, NULL, 10);
+        mi->major = str2ul(major);
+        mi->minor = str2ul(minor);
 
         mi->root = strdupz(procfile_lineword(ff, l, w)); w++;
         mi->root_hash = simple_hash(mi->root);
@@ -213,6 +228,9 @@ struct mountinfo *mountinfo_read() {
         mi->persistent_id_hash = simple_hash(mi->persistent_id);
 
         mi->mount_options = strdupz(procfile_lineword(ff, l, w)); w++;
+
+        if(unlikely(is_read_only(mi->mount_options)))
+            mi->flags |= MOUNTINFO_READONLY;
 
         // count the optional fields
 /*
@@ -249,10 +267,13 @@ struct mountinfo *mountinfo_read() {
             mi->filesystem = strdupz(procfile_lineword(ff, l, w)); w++;
             mi->filesystem_hash = simple_hash(mi->filesystem);
 
-            mi->mount_source = strdupz(procfile_lineword(ff, l, w)); w++;
+            mi->mount_source = strdupz_decoding_octal(procfile_lineword(ff, l, w)); w++;
             mi->mount_source_hash = simple_hash(mi->mount_source);
 
             mi->super_options = strdupz(procfile_lineword(ff, l, w)); w++;
+
+            if(unlikely(is_read_only(mi->super_options)))
+                mi->flags |= MOUNTINFO_READONLY;
 
             if(unlikely(ME_DUMMY(mi->mount_source, mi->filesystem)))
                 mi->flags |= MOUNTINFO_IS_DUMMY;
@@ -261,7 +282,7 @@ struct mountinfo *mountinfo_read() {
                 mi->flags |= MOUNTINFO_IS_REMOTE;
 
             // mark as BIND the duplicates (i.e. same filesystem + same source)
-            {
+            if(do_statvfs) {
                 struct stat buf;
                 if(unlikely(stat(mi->mount_point, &buf) == -1)) {
                     mi->st_dev = 0;
@@ -281,6 +302,9 @@ struct mountinfo *mountinfo_read() {
                     }
                 }
             }
+            else {
+                mi->st_dev = 0;
+            }
         }
         else {
             mi->filesystem = NULL;
@@ -295,7 +319,7 @@ struct mountinfo *mountinfo_read() {
         }
 
         // check if it has size
-        {
+        if(do_statvfs) {
             struct statvfs buff_statvfs;
             if(unlikely(statvfs(mi->mount_point, &buff_statvfs) < 0)) {
                 mi->flags |= MOUNTINFO_NO_STAT;

@@ -4,7 +4,7 @@
 AC_PREREQ(2.60)
 
 define([VERSION_MAJOR], [1])
-define([VERSION_MINOR], [4])
+define([VERSION_MINOR], [5])
 define([VERSION_FIX], [1])
 define([VERSION_NUMBER], VERSION_MAJOR[.]VERSION_MINOR[.]VERSION_FIX)
 define([VERSION_SUFFIX], [_master])
@@ -24,6 +24,15 @@ PACKAGE_RPM_VERSION="VERSION_NUMBER"
 AC_SUBST([PACKAGE_RPM_VERSION])
 AC_SUBST([PACKAGE_RPM_RELEASE])
 
+# fails on centos6
+#AX_CHECK_ENABLE_DEBUG()
+
+AX_GCC_FUNC_ATTRIBUTE(returns_nonnull)
+AX_GCC_FUNC_ATTRIBUTE(malloc)
+AX_GCC_FUNC_ATTRIBUTE(noreturn)
+AX_GCC_FUNC_ATTRIBUTE(format)
+AX_GCC_FUNC_ATTRIBUTE(warn_unused_result)
+
 AC_CONFIG_AUX_DIR([.])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
@@ -35,6 +44,25 @@ AC_PROG_INSTALL
 PKG_PROG_PKG_CONFIG
 AC_USE_SYSTEM_EXTENSIONS
 AC_CHECK_FUNCS_ONCE(accept4)
+AC_CHECK_TYPES([struct timespec, clockid_t], [], [], [[#include <time.h>]])
+AC_SEARCH_LIBS([clock_gettime], [rt posix4])
+AC_CHECK_FUNCS([clock_gettime])
+
+# Check system type
+case "$host_os" in
+freebsd*)
+	build_target=freebsd
+	;;
+darwin*)
+	build_target=macos
+	LDFLAGS="${LDFLAGS} -framework CoreFoundation -framework IOKit"
+	;;
+*)
+	;;
+esac
+
+AM_CONDITIONAL([FREEBSD], [test x$build_target = xfreebsd])
+AM_CONDITIONAL([MACOS], [test x$build_target = xmacos])
 
 AC_ARG_ENABLE(
 	[plugin-nfacct],
@@ -104,8 +132,11 @@ AC_C_INLINE
 AC_FUNC_STRERROR_R
 AC_C__GENERIC
 AC_C___ATOMIC
+# AC_C_STMT_EXPR
 AC_CHECK_SIZEOF([void *])
 AC_CANONICAL_HOST
+AC_HEADER_MAJOR
+AC_HEADER_RESOLV
 
 AC_ARG_VAR([SSE_CANDIDATE], [C compiler flags for SSE])
 AS_CASE([$host_cpu],

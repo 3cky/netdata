@@ -117,12 +117,20 @@ int become_user(const char *username, int pid_fd)
         ngroups = 0;
     }
 
+#ifdef __APPLE__
+    if(setregid(gid, gid) != 0) {
+#else
     if(setresgid(gid, gid, gid) != 0) {
+#endif /* __APPLE__ */
         error("Cannot switch to user's %s group (gid: %u).", username, gid);
         return -1;
     }
 
+#ifdef __APPLE__
+    if(setreuid(uid, uid) != 0) {
+#else
     if(setresuid(uid, uid, uid) != 0) {
+#endif /* __APPLE__ */
         error("Cannot switch to user %s (uid: %u).", username, uid);
         return -1;
     }
@@ -228,7 +236,7 @@ int become_daemon(int dont_fork, const char *user)
     }
 
     // Set new file permissions
-    umask(0002);
+    umask(0007);
 
     // adjust my Out-Of-Memory score
     oom_score_adj(1000);

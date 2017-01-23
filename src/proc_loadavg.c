@@ -3,21 +3,20 @@
 // linux calculates this once every 5 seconds
 #define MIN_LOADAVG_UPDATE_EVERY 5
 
-int do_proc_loadavg(int update_every, unsigned long long dt) {
-    (void)dt;
-
+int do_proc_loadavg(int update_every, usec_t dt) {
     static procfile *ff = NULL;
     static int do_loadavg = -1, do_all_processes = -1;
-    static unsigned long long last_loadavg_usec = 0;
+    static usec_t last_loadavg_usec = 0;
     static RRDSET *load_chart = NULL, *processes_chart = NULL;
 
     if(unlikely(!ff)) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s%s", global_host_prefix, "/proc/loadavg");
+
         ff = procfile_open(config_get("plugin:proc:/proc/loadavg", "filename to monitor", filename), " \t,:|/", PROCFILE_FLAG_DEFAULT);
+        if(unlikely(!ff))
+            return 1;
     }
-    if(unlikely(!ff))
-        return 1;
 
     ff = procfile_readall(ff);
     if(unlikely(!ff))
@@ -41,9 +40,9 @@ int do_proc_loadavg(int update_every, unsigned long long dt) {
     double load5 = strtod(procfile_lineword(ff, 0, 1), NULL);
     double load15 = strtod(procfile_lineword(ff, 0, 2), NULL);
 
-    //unsigned long long running_processes  = strtoull(procfile_lineword(ff, 0, 3), NULL, 10);
-    unsigned long long active_processes     = strtoull(procfile_lineword(ff, 0, 4), NULL, 10);
-    //unsigned long long next_pid           = strtoull(procfile_lineword(ff, 0, 5), NULL, 10);
+    //unsigned long long running_processes  = str2ull(procfile_lineword(ff, 0, 3));
+    unsigned long long active_processes     = str2ull(procfile_lineword(ff, 0, 4));
+    //unsigned long long next_pid           = str2ull(procfile_lineword(ff, 0, 5));
 
 
     // --------------------------------------------------------------------
@@ -68,7 +67,7 @@ int do_proc_loadavg(int update_every, unsigned long long dt) {
             rrdset_done(load_chart);
         }
 
-        last_loadavg_usec = load_chart->update_every * 1000000ULL;
+        last_loadavg_usec = load_chart->update_every * USEC_PER_SEC;
     }
     else last_loadavg_usec -= dt;
 

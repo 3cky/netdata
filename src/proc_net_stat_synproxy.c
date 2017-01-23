@@ -3,7 +3,7 @@
 #define RRD_TYPE_NET_STAT_NETFILTER         "netfilter"
 #define RRD_TYPE_NET_STAT_SYNPROXY          "synproxy"
 
-int do_proc_net_stat_synproxy(int update_every, unsigned long long dt) {
+int do_proc_net_stat_synproxy(int update_every, usec_t dt) {
     (void)dt;
 
     static int do_entries = -1, do_cookies = -1, do_syns = -1, do_reopened = -1;
@@ -39,7 +39,7 @@ int do_proc_net_stat_synproxy(int update_every, unsigned long long dt) {
 
     // synproxy gives its values per CPU
     for(l = 1; l < lines ;l++) {
-        int words = procfile_linewords(ff, l);
+        size_t words = procfile_linewords(ff, l);
         if(unlikely(words < 6))
             continue;
 

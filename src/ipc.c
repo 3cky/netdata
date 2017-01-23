@@ -81,10 +81,10 @@ static inline int ipc_sem_get_limits(struct ipc_limits *lim) {
 
     if(procfile_lines(ff) >= 1 && procfile_linewords(ff, 0) >= 4) {
         lim->semvmx = SEMVMX;
-        lim->semmsl = atoi(procfile_lineword(ff, 0, 0));
-        lim->semmns = atoi(procfile_lineword(ff, 0, 1));
-        lim->semopm = atoi(procfile_lineword(ff, 0, 2));
-        lim->semmni = atoi(procfile_lineword(ff, 0, 3));
+        lim->semmsl = str2i(procfile_lineword(ff, 0, 0));
+        lim->semmns = str2i(procfile_lineword(ff, 0, 1));
+        lim->semopm = str2i(procfile_lineword(ff, 0, 2));
+        lim->semmni = str2i(procfile_lineword(ff, 0, 3));
         return 0;
     }
     else {
@@ -160,7 +160,7 @@ static inline int ipc_sem_get_status(struct ipc_status *st) {
     return 0;
 }
 
-int do_ipc(int update_every, unsigned long long dt) {
+int do_ipc(int update_every, usec_t dt) {
     (void)dt;
 
     static int initialized = 0, read_limits_next = 0;
@@ -209,8 +209,8 @@ int do_ipc(int update_every, unsigned long long dt) {
             error("Unable to fetch semaphore limits.");
         }
         else {
-            rrdvar_custom_host_variable_set(arrays_max, limits.semmni);
-            rrdvar_custom_host_variable_set(semaphores_max, limits.semmns);
+            if(arrays_max)     rrdvar_custom_host_variable_set(arrays_max, limits.semmni);
+            if(semaphores_max) rrdvar_custom_host_variable_set(semaphores_max, limits.semmns);
 
             arrays->red = limits.semmni;
             semaphores->red = limits.semmns;

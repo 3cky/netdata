@@ -40,6 +40,7 @@ retries = 60
 
 # query executed on MySQL server
 QUERY = "SHOW GLOBAL STATUS;"
+QUERY_SLAVE = "SHOW SLAVE STATUS;"
 
 ORDER = ['net',
          'queries',
@@ -55,7 +56,7 @@ ORDER = ['net',
          'innodb_buffer_pool_read_ahead', 'innodb_buffer_pool_reqs', 'innodb_buffer_pool_ops',
          'qcache_ops', 'qcache', 'qcache_freemem', 'qcache_memblocks',
          'key_blocks', 'key_requests', 'key_disk_ops',
-         'files', 'files_rate']
+         'files', 'files_rate', 'slave_behind', 'slave_status']
 
 CHARTS = {
     'net': {
@@ -298,8 +299,18 @@ CHARTS = {
             ["Connection_errors_peer_address", "peer_addr", "incremental"],
             ["Connection_errors_select", "select", "incremental"],
             ["Connection_errors_tcpwrap", "tcpwrap", "incremental"]
+        ]},
+    'slave_behind': {
+        'options': [None, 'Slave Behind Seconds', 'seconds', 'slave', 'mysql.slave_behind', 'line'],
+        'lines': [
+            ["slave_behind", "seconds", "absolute"]
+        ]},
+    'slave_status': {
+        'options': [None, 'Slave Status', 'status', 'slave', 'mysql.slave_status', 'line'],
+        'lines': [
+            ["slave_sql", "sql_running", "absolute"],
+            ["slave_io", "io_running", "absolute"]
         ]}
-
 }
 
 
@@ -310,6 +321,7 @@ class Service(SimpleService):
         self.order = ORDER
         self.definitions = CHARTS
         self.connection = None
+        self.do_slave = -1
 
     def _parse_config(self, configuration):
         """
@@ -348,6 +360,67 @@ class Service(SimpleService):
             self.error("problem connecting to server:", e)
             raise RuntimeError
 
+    def _get_data_slave(self):
+        """
+        Get slave raw data from MySQL server
+        :return: dict
+        """
+        if self.connection is None:
+            try:
+                self._connect()
+            except RuntimeError:
+                return None
+
+        slave_data = None
+        slave_raw_data = None
+        try:
+            cursor = self.connection.cursor()
+            if cursor.execute(QUERY_SLAVE):
+                slave_raw_data = dict(list(zip([elem[0] for elem in cursor.description], cursor.fetchone())))
+
+        except MySQLdb.OperationalError as e:
+            self.debug("Reconnecting for query", QUERY_SLAVE, ":", str(e))
+            try:
+                self._connect()
+                cursor = self.connection.cursor()
+                if cursor.execute(QUERY_SLAVE):
+                    slave_raw_data = dict(list(zip([elem[0] for elem in cursor.description], cursor.fetchone())))
+            except Exception as e:
+                self.error("retried, but cannot execute query", QUERY_SLAVE, ":", str(e))
+                self.connection.close()
+                self.connection = None
+                return None
+
+        except Exception as e:
+            self.error("cannot execute query", QUERY_SLAVE, ":", str(e))
+            self.connection.close()
+            self.connection = None
+            return None
+
+        if slave_raw_data is not None:
+            slave_data = {
+                'slave_behind': None,
+                'slave_sql': None,
+                'slave_io': None
+            }
+
+            try:
+                slave_data['slave_behind'] = int(slave_raw_data.setdefault('Seconds_Behind_Master', -1))
+            except:
+                slave_data['slave_behind'] = None
+
+            try:
+                slave_data['slave_sql'] = 1 if slave_raw_data.get('Slave_SQL_Running') == 'Yes' else -1
+            except:
+                slave_data['slave_sql'] = None
+
+            try:
+                slave_data['slave_io'] = 1 if slave_raw_data.get('Slave_IO_Running') == 'Yes' else -1
+            except:
+                slave_data['slave_io'] = None
+
+        return slave_data
+
     def _get_data(self):
         """
         Get raw data from MySQL server
@@ -362,23 +435,47 @@ class Service(SimpleService):
             cursor = self.connection.cursor()
             cursor.execute(QUERY)
             raw_data = cursor.fetchall()
+
         except MySQLdb.OperationalError as e:
-            self.debug("Reconnecting due to", str(e))
-            self._connect()
-            cursor = self.connection.cursor()
-            cursor.execute(QUERY)
-            raw_data = cursor.fetchall()
+            self.debug("Reconnecting for query", QUERY, ":", str(e))
+            try:
+                self._connect()
+                cursor = self.connection.cursor()
+                cursor.execute(QUERY)
+                raw_data = cursor.fetchall()
+            except Exception as e:
+                self.error("retried, but cannot execute query", QUERY, ":", str(e))
+                self.connection.close()
+                self.connection = None
+                return None
+
         except Exception as e:
-            self.error("cannot execute query.", e)
+            self.error("cannot execute query", QUERY, ":", str(e))
             self.connection.close()
             self.connection = None
             return None
 
         data = dict(raw_data)
+
+        # check for slave data
+        # the first time is -1 (so we do it)
+        # then it is set to 1 or 0 and we keep it like that
+        if self.do_slave != 0:
+            slave_data = self._get_data_slave()
+            if slave_data is not None:
+                data.update(slave_data)
+                if self.do_slave == -1:
+                    self.do_slave = 1
+            else:
+                if self.do_slave == -1:
+                    self.error("replication metrics will be disabled - please allow netdata to collect them.")
+                    self.do_slave = 0
+
+        # do calculations
         try:
-            data["Thread_cache_misses"] = int(data["Threads_created"] * 10000 / float(data["Connections"]))
+            data["Thread_cache_misses"] = round(float(data["Threads_created"]) / float(data["Connections"]) * 10000)
         except:
-            data["Thread_cache_misses"] = 0
+            data["Thread_cache_misses"] = None
 
         return data
 

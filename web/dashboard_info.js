@@ -11,6 +11,12 @@ netdataDashboard.menu = {
         info: 'Overview of the key system metrics.'
     },
 
+    'services': {
+        title: 'Systemd Services',
+        icon: '<i class="fa fa-cogs" aria-hidden="true"></i>',
+        info: 'Resources utilization of systemd services.'
+    },
+
     'ap': {
         title: 'Access Points',
         icon: '<i class="fa fa-wifi" aria-hidden="true"></i>',
@@ -256,6 +262,10 @@ netdataDashboard.submenu = {
         info: 'Kernel Same-page Merging (KSM) performance monitoring, read from several files in <code>/sys/kernel/mm/ksm/</code>. KSM is a memory-saving de-duplication feature in the Linux kernel (since version 2.6.32). The KSM daemon ksmd periodically scans those areas of user memory which have been registered with it, looking for pages of identical content which can be replaced by a single write-protected page (which is automatically copied if a process later wants to update its content). KSM was originally developed for use with KVM (where it was known as Kernel Shared Memory), to fit more virtual machines into physical memory, by sharing the data common between them.  But it can be useful to any application which generates many instances of the same data.'
     },
 
+    'mem.numa': {
+        info: 'Non-Uniform Memory Access (NUMA) is a hierarchical memory design the memory access time is dependent on locality. Under NUMA, a processor can access its own local memory faster than non-local memory (memory local to another processor or memory shared between processors). The individual metrics are described in the <a href="https://www.kernel.org/doc/Documentation/numastat.txt" target="_blank">Linux kernel documentation</a>.'
+    },
+
     'ipv4.ecn': {
         info: '<a href="https://en.wikipedia.org/wiki/Explicit_Congestion_Notification" target="_blank">Explicit Congestion Notification (ECN)</a> is a TCP extension that allows end-to-end notification of network congestion without dropping packets. ECN is an optional feature that may be used between two ECN-enabled endpoints when the underlying network infrastructure also supports it.'
     },
@@ -277,12 +287,12 @@ netdataDashboard.submenu = {
 
     'system.softnet_stat': {
         title: 'softnet',
-        info: 'Statistics for CPUs SoftIRQs related to network receive work, read from <code>/proc/net/softnet_stat</code>. Break down per CPU core can be found at <a href="#cpu_softnet_stat">CPU / softnet statistics</a>. <b>processed</b> states the number of packets processed, <b>dropped</b> is the number packets dropped because the network device backlog was full (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_max_backlog</code>), <b>squeezed</b> is the number of packets dropped because the network device budget ran out (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_budget</code>). More information about identifying and troubleshooting network driver related issues can be found at <a href="https://access.redhat.com/sites/default/files/attachments/20150325_network_performance_tuning.pdf" target="_blank">Red Hat Enterprise Linux Network Performance Tuning Guide</a>.'
+        info: 'Statistics for CPUs SoftIRQs related to network receive work, read from <code>/proc/net/softnet_stat</code>. Break down per CPU core can be found at <a href="#menu_cpu_submenu_softnet_stat">CPU / softnet statistics</a>. <b>processed</b> states the number of packets processed, <b>dropped</b> is the number packets dropped because the network device backlog was full (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_max_backlog</code>), <b>squeezed</b> is the number of packets dropped because the network device budget ran out (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_budget</code>). More information about identifying and troubleshooting network driver related issues can be found at <a href="https://access.redhat.com/sites/default/files/attachments/20150325_network_performance_tuning.pdf" target="_blank">Red Hat Enterprise Linux Network Performance Tuning Guide</a>.'
     },
 
     'cpu.softnet_stat': {
         title: 'softnet',
-        info: 'Statistics for per CPUs core SoftIRQs related to network receive work, read from <code>/proc/net/softnet_stat</code>. Total for all CPU cores can be found at <a href="#system_softnet_stat">System / softnet statistics</a>. <b>processed</b> states the number of packets processed, <b>dropped</b> is the number packets dropped because the network device backlog was full (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_max_backlog</code>), <b>squeezed</b> is the number of packets dropped because the network device budget ran out (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_budget</code>). More information about identifying and troubleshooting network driver related issues can be found at <a href="https://access.redhat.com/sites/default/files/attachments/20150325_network_performance_tuning.pdf" target="_blank">Red Hat Enterprise Linux Network Performance Tuning Guide</a>.'
+        info: 'Statistics for per CPUs core SoftIRQs related to network receive work, read from <code>/proc/net/softnet_stat</code>. Total for all CPU cores can be found at <a href="#menu_system_submenu_softnet_stat">System / softnet statistics</a>. <b>processed</b> states the number of packets processed, <b>dropped</b> is the number packets dropped because the network device backlog was full (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_max_backlog</code>), <b>squeezed</b> is the number of packets dropped because the network device budget ran out (to fix them use <code>sysctl</code> to increase <code>net.core.netdev_budget</code>). More information about identifying and troubleshooting network driver related issues can be found at <a href="https://access.redhat.com/sites/default/files/attachments/20150325_network_performance_tuning.pdf" target="_blank">Red Hat Enterprise Linux Network Performance Tuning Guide</a>.'
     }
 };
 
@@ -298,7 +308,7 @@ netdataDashboard.submenu = {
 //
 netdataDashboard.context = {
     'system.cpu': {
-        info: 'Total CPU utilization (all cores). 100% here means there is no CPU idle time at all. You can get per core usage at the <a href="#cpu">CPUs</a> section and per application usage at the <a href="#apps">Applications Monitoring</a> section.<br/>Keep an eye on <b>iowait</b> ' + sparkline('system.cpu', 'iowait', '%') + '. If it is constantly high, your disks are a bottleneck and they slow your system down.<br/>Another important metric worth monitoring, is <b>softirq</b> ' + sparkline('system.cpu', 'softirq', '%') + '. A constantly high percentage of softirq may indicate network drivers issues.',
+        info: 'Total CPU utilization (all cores). 100% here means there is no CPU idle time at all. You can get per core usage at the <a href="#menu_cpu">CPUs</a> section and per application usage at the <a href="#menu_apps">Applications Monitoring</a> section.<br/>Keep an eye on <b>iowait</b> ' + sparkline('system.cpu', 'iowait', '%') + '. If it is constantly high, your disks are a bottleneck and they slow your system down.<br/>Another important metric worth monitoring, is <b>softirq</b> ' + sparkline('system.cpu', 'softirq', '%') + '. A constantly high percentage of softirq may indicate network driver issues.',
         valueRange: "[0, 100]"
     },
 
@@ -308,7 +318,7 @@ netdataDashboard.context = {
     },
 
     'system.io': {
-        info: 'Total Disk I/O, for all disks, read from <code>/proc/vmstat</code>. You can get detailed information about each disk at the <a href="#disk">Disks</a> section and per application Disk usage at the <a href="#apps">Applications Monitoring</a> section.'
+        info: 'Total Disk I/O, for all disks, read from <code>/proc/vmstat</code>. You can get detailed information about each disk at the <a href="#menu_disk">Disks</a> section and per application Disk usage at the <a href="#menu_apps">Applications Monitoring</a> section.'
     },
 
     'system.swapio': {
@@ -316,7 +326,7 @@ netdataDashboard.context = {
     },
 
     'system.pgfaults': {
-        info: 'Total page faults, read from <code>/proc/vmstat</code>. <b>Major page faults</b> indicates that the system is using its swap. You can find which applications use the swap at the <a href="#apps">Applications Monitoring</a> section.'
+        info: 'Total page faults, read from <code>/proc/vmstat</code>. <b>Major page faults</b> indicates that the system is using its swap. You can find which applications use the swap at the <a href="#menu_apps">Applications Monitoring</a> section.'
     },
 
     'system.entropy': {
@@ -331,15 +341,15 @@ netdataDashboard.context = {
 
     'system.intr': {
         colors: '#DD5555',
-        info: 'Total number of CPU interrupts, read from <code>/proc/stat</code>. Check <code>system.interrupts</code> that gives more detail about each interrupt and also the <a href="#cpu">CPUs</a> section where interrupts are analyzed per CPU core.'
+        info: 'Total number of CPU interrupts, read from <code>/proc/stat</code>. Check <code>system.interrupts</code> that gives more detail about each interrupt and also the <a href="#menu_cpu">CPUs</a> section where interrupts are analyzed per CPU core.'
     },
 
     'system.interrupts': {
-        info: 'CPU interrupts in detail, read from <code>/proc/interrupts</code>. At the <a href="#cpu">CPUs</a> section, interrupts are analyzed per CPU core.'
+        info: 'CPU interrupts in detail, read from <code>/proc/interrupts</code>. At the <a href="#menu_cpu">CPUs</a> section, interrupts are analyzed per CPU core.'
     },
 
     'system.softirqs': {
-        info: 'CPU softirqs in detail, read from <code>/proc/softirqs</code>. At the <a href="#cpu">CPUs</a> section, softirqs are analyzed per CPU core.'
+        info: 'CPU softirqs in detail, read from <code>/proc/softirqs</code>. At the <a href="#menu_cpu">CPUs</a> section, softirqs are analyzed per CPU core.'
     },
 
     'system.processes': {
@@ -430,7 +440,7 @@ netdataDashboard.context = {
     // network interfaces
 
     'net.drops': {
-        info: 'Packets that have been dropped at the network interface level. These are the same counters reported by <code>ifconfig</code> as <code>RX dropped</code> (inbound) and <code>TX dropped</code> (outbound). <b>inbound</b> packets can be dropped at the network interface level due to <a href="#system_softnet_stat">softnet backlog</a> overflow, bad / unintented VLAN tags, unknown or unregistered protocols, IPv6 frames when the server is not configured for IPv6. Check <a href="https://www.novell.com/support/kb/doc.php?id=7007165" target="_blank">this document</a> for more information.'
+        info: 'Packets that have been dropped at the network interface level. These are the same counters reported by <code>ifconfig</code> as <code>RX dropped</code> (inbound) and <code>TX dropped</code> (outbound). <b>inbound</b> packets can be dropped at the network interface level due to <a href="#menu_system_submenu_softnet_stat">softnet backlog</a> overflow, bad / unintented VLAN tags, unknown or unregistered protocols, IPv6 frames when the server is not configured for IPv6. Check <a href="https://www.novell.com/support/kb/doc.php?id=7007165" target="_blank">this document</a> for more information.'
     },
 
     // ------------------------------------------------------------------------

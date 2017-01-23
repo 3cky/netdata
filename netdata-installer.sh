@@ -13,7 +13,7 @@ then
 fi
 
 LC_ALL=C
-umask 022
+umask 002
 
 # Be nice on production environments
 renice 19 $$ >/dev/null 2>/dev/null
@@ -22,7 +22,8 @@ processors=$(cat /proc/cpuinfo  | grep ^processor | wc -l)
 [ $(( processors )) -lt 1 ] && processors=1
 
 # you can set CFLAGS before running installer
-CFLAGS="${CFLAGS--O3}"
+CFLAGS="${CFLAGS--O2}"
+[ "z${CFLAGS}" = "z-O3" ] && CFLAGS="-O2"
 
 # keep a log of this command
 printf "\n# " >>netdata-installer.log
@@ -112,7 +113,7 @@ Valid <installer options> are:
         Use this option to allow it continue
         without checking pkg-config.
 
-Netdata will by default be compiled with gcc optimization -O3
+Netdata will by default be compiled with gcc optimization -O2
 If you need to pass different CFLAGS, use something like this:
 
   CFLAGS="<gcc options>" ${ME} <installer options>
@@ -547,45 +548,172 @@ do
     fi
 done
 
+echo >&2 "Fixing permissions ..."
+
+check_cmd() {
+    which "${1}" >/dev/null 2>&1 && return 0
+    command -v "${1}" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+portable_add_user() {
+    local username="${1}"
+
+    getent passwd "${username}" > /dev/null 2>&1
+    [ $? -eq 0 ] && return 0
+
+    echo >&2 "Adding ${username} user account ..."
+
+    local nologin="$(which nologin 2>/dev/null || command -v nologin 2>/dev/null || echo '/bin/false')"
+
+    # Linux
+    if check_cmd useradd
+    then
+        run useradd -r -g "${username}" -c "${username}" -s "${nologin}" -d / "${username}" && return 0
+    fi
+
+    # FreeBSD
+    if check_cmd pw
+    then
+        run pw useradd "${username}" -d / -g "${username}" -s "${nologin}" && return 0
+    fi
+
+    # BusyBox
+    if check_cmd adduser
+    then
+        run adduser -D -G "${username}" "${username}" && return 0
+    fi
+
+    echo >&2 "Failed to add ${username} user account !"
+
+    return 1
+}
+
+portable_add_group() {
+    local groupname="${1}"
+
+    getent group "${groupname}" > /dev/null 2>&1
+    [ $? -eq 0 ] && return 0
+
+    echo >&2 "Adding ${groupname} user group ..."
+
+    # Linux
+    if check_cmd groupadd
+    then
+        run groupadd -r "${groupname}" && return 0
+    fi
+
+    # FreeBSD
+    if check_cmd pw
+    then
+        run pw groupadd "${groupname}" && return 0
+    fi
+
+    # BusyBox
+    if check_cmd addgroup
+    then
+        run addgroup "${groupname}" && return 0
+    fi
+
+    echo >&2 "Failed to add ${groupname} user group !"
+    return 1
+}
+
+portable_add_user_to_group() {
+    local groupname="${1}" username="${2}"
+
+    getent group "${groupname}" > /dev/null 2>&1
+    [ $? -ne 0 ] && return 1
+
+    # find the user is already in the group
+    local users=$(getent group "${groupname}" | cut -d ':' -f 4)
+    if [[ ",${users}," =~ ,${username}, ]]
+        then
+        # username is already there
+        return 0
+    else
+        # username is not in group
+        echo >&2 "Adding ${username} user to the ${groupname} group ..."
+
+        # Linux
+        if check_cmd usermod
+        then
+            run usermod -a -G "${groupname}" "${username}" && return 0
+        fi
+
+        # FreeBSD
+        if check_cmd pw
+        then
+            run pw groupmod "${groupname}" -m "${username}" && return 0
+        fi
+
+        # BusyBox
+        if check_cmd addgroup
+        then
+            run addgroup "${username}" "${groupname}" && return 0
+        fi
+
+        echo >&2 "Failed to add user ${username} to group ${groupname} !"
+        return 1
+    fi
+}
+
+iscontainer() {
+    # man systemd-detect-virt
+    local cmd=$(which systemd-detect-virt 2>/dev/null || command -v systemd-detect-virt 2>/dev/null)
+    if [ ! -z "${cmd}" -a -x "${cmd}" ]
+        then
+        "${cmd}" --container >/dev/null 2>&1 && return 0
+    fi
+
+    # /proc/1/sched exposes the host's pid of our init !
+    # http://stackoverflow.com/a/37016302
+    local pid=$( cat /proc/1/sched | head -n 1 | { IFS='(),#:' read name pid th threads; echo $pid; } )
+    local p=$(( pid + 0 ))
+    [ ${pid} -ne 1 ] && return 0
+
+    # lxc sets environment variable 'container'
+    [ ! -z "${container}" ] && return 0
+
+    # docker creates /.dockerenv
+    # http://stackoverflow.com/a/25518345
+    [ -f "/.dockerenv" ] && return 0
+
+    # ubuntu and debian supply /bin/running-in-container
+    # https://www.apt-browse.org/browse/ubuntu/trusty/main/i386/upstart/1.12.1-0ubuntu4/file/bin/running-in-container
+    if [ -x "/bin/running-in-container" ]
+        then
+        "/bin/running-in-container" >/dev/null 2>&1 && return 0
+    fi
+
+    return 1
+}
+
+run find ./system/ -type f -a \! -name \*.in -a \! -name Makefile\* -a \! -name \*.conf -a \! -name \*.service -a \! -name \*.logrotate -exec chmod 755 {} \;
+
 NETDATA_ADDED_TO_DOCKER=0
+NETDATA_ADDED_TO_NGINX=0
+NETDATA_ADDED_TO_VARNISH=0
+NETDATA_ADDED_TO_HAPROXY=0
 if [ ${UID} -eq 0 ]
     then
-    getent group netdata > /dev/null
-    if [ $? -ne 0 ]
-        then
-        echo >&2 "Adding netdata user group ..."
-        run groupadd -r netdata
-    fi
-
-    getent passwd netdata > /dev/null
-    if [ $? -ne 0 ]
-        then
-        echo >&2 "Adding netdata user account ..."
-        run useradd -r -g netdata -c netdata -s $(which nologin 2>/dev/null || command -v nologin 2>/dev/null || echo '/bin/false') -d / netdata
-    fi
-
-    getent group docker > /dev/null
-    if [ $? -eq 0 ]
-        then
-        # find the users in the docker group
-        docker=$(getent group docker | cut -d ':' -f 4)
-        if [[ ",${docker}," =~ ,netdata, ]]
-            then
-            # netdata is already there
-            :
-        else
-            # netdata is not in docker group
-            echo >&2 "Adding netdata user to the docker group (needed to get container names) ..."
-            run usermod -a -G docker netdata
-        fi
-        # let the uninstall script know
-        NETDATA_ADDED_TO_DOCKER=1
-    fi
+    portable_add_group netdata
+    portable_add_user netdata
+    portable_add_user_to_group docker netdata && NETDATA_ADDED_TO_DOCKER=1
+    portable_add_user_to_group nginx  netdata && NETDATA_ADDED_TO_NGINX=1
+    portable_add_user_to_group varnish  netdata && NETDATA_ADDED_TO_VARNISH=1
+    portable_add_user_to_group haproxy  netdata && NETDATA_ADDED_TO_HAPROXY=1
 
     if [ -d /etc/logrotate.d -a ! -f /etc/logrotate.d/netdata ]
         then
         echo >&2 "Adding netdata logrotate configuration ..."
         run cp system/netdata.logrotate /etc/logrotate.d/netdata
+    fi
+    
+    if [ -f /etc/logrotate.d/netdata ]
+        then
+        echo >&2 "Fixing netdata logrotate permissions ..."
+        run chmod 644 /etc/logrotate.d/netdata
     fi
 fi
 
@@ -609,17 +737,20 @@ config_option() {
     echo "${value}"
 }
 
-# user
-defuser="netdata"
-[ ! "${UID}" = "0" ] && defuser="${USER}"
-NETDATA_USER="$( config_option "run as user" "${defuser}" )"
+# the user netdata will run as
+if [ "${UID}" = "0" ]
+    then
+    NETDATA_USER="$( config_option "run as user" "netdata" )"
+else
+    NETDATA_USER="${USER}"
+fi
 
-NETDATA_WEB_USER="$( config_option "web files owner" "${defuser}" )"
+# the owners of the web files
+NETDATA_WEB_USER="$(  config_option "web files owner" "${NETDATA_USER}" )"
 NETDATA_WEB_GROUP="$( config_option "web files group" "${NETDATA_WEB_USER}" )"
 
 # debug flags
-defdebug=0
-NETDATA_DEBUG="$( config_option "debug flags" ${defdebug} )"
+NETDATA_DEBUG="$( config_option "debug flags" 0 )"
 
 # port
 defport=19999
@@ -654,7 +785,35 @@ fi
 
 echo >&2
 echo >&2 "Fixing directories (user: ${NETDATA_USER})..."
-for x in "${NETDATA_WEB_DIR}" "${NETDATA_CONF_DIR}" "${NETDATA_CACHE_DIR}" "${NETDATA_LOG_DIR}" "${NETDATA_LIB_DIR}" "${NETDATA_CONF_DIR}/python.d" "${NETDATA_CONF_DIR}/charts.d" "${NETDATA_CONF_DIR}/node.d"
+
+# --- conf dir ----
+
+for x in "python.d" "charts.d" "node.d"
+do
+    if [ ! -d "${NETDATA_CONF_DIR}/${x}" ]
+        then
+        echo >&2 "Creating directory '${NETDATA_CONF_DIR}/${x}'"
+        run mkdir -p "${NETDATA_CONF_DIR}/${x}" || exit 1
+    fi
+done
+run chown -R "${NETDATA_USER}:${NETDATA_USER}" "${NETDATA_CONF_DIR}"
+run find "${NETDATA_CONF_DIR}" -type f -exec chmod 0660 {} \;
+run find "${NETDATA_CONF_DIR}" -type d -exec chmod 0775 {} \;
+
+# --- web dir ----
+
+if [ ! -d "${NETDATA_WEB_DIR}" ]
+    then
+    echo >&2 "Creating directory '${NETDATA_WEB_DIR}'"
+    run mkdir -p "${NETDATA_WEB_DIR}" || exit 1
+fi
+run chown -R "${NETDATA_WEB_USER}:${NETDATA_WEB_GROUP}" "${NETDATA_WEB_DIR}"
+run find "${NETDATA_WEB_DIR}" -type f -exec chmod 0664 {} \;
+run find "${NETDATA_WEB_DIR}" -type d -exec chmod 0775 {} \;
+
+# --- data dirs ----
+
+for x in "${NETDATA_LIB_DIR}" "${NETDATA_CACHE_DIR}" "${NETDATA_LOG_DIR}"
 do
     if [ ! -d "${x}" ]
         then
@@ -662,31 +821,58 @@ do
         run mkdir -p "${x}" || exit 1
     fi
 
-    if [ ${UID} -eq 0 ]
-        then
-        if [ "${x}" = "${NETDATA_WEB_DIR}" ]
-            then
-            run chown -R "${NETDATA_WEB_USER}:${NETDATA_WEB_GROUP}" "${x}" || echo >&2 "WARNING: Cannot change the ownership of the files in directory ${x} to ${NETDATA_WEB_USER}:${NETDATA_WEB_GROUP}..."
-        else
-            run chown -R "${NETDATA_USER}:${NETDATA_USER}" "${x}" || echo >&2 "WARNING: Cannot change the ownership of the files in directory ${x} to ${NETDATA_USER}..."
-        fi
-    fi
-
-    run chmod 0755 "${x}" || echo >&2 "WARNING: Cannot change the permissions of the directory ${x} to 0755..."
+    run chown -R "${NETDATA_USER}:${NETDATA_USER}" "${x}"
+    #run find "${x}" -type f -exec chmod 0660 {} \;
+    #run find "${x}" -type d -exec chmod 0770 {} \;
 done
+
+run chmod 755 "${NETDATA_LOG_DIR}"
+
+# --- plugins ----
 
 if [ ${UID} -eq 0 ]
     then
-    run chown root "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
-    run chmod 0755 "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
-    run setcap cap_dac_read_search,cap_sys_ptrace+ep "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
-    if [ $? -ne 0 ]
+    run chown "${NETDATA_USER}:root" "${NETDATA_LOG_DIR}"
+    run chown -R root "${NETDATA_PREFIX}/usr/libexec/netdata"
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type d -exec chmod 0755 {} \;
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type f -exec chmod 0644 {} \;
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type f -a -name \*.plugin -exec chmod 0755 {} \;
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type f -a -name \*.sh -exec chmod 0755 {} \;
+
+    setcap_ret=1
+    if ! iscontainer
+        then
+        run setcap cap_dac_read_search,cap_sys_ptrace+ep "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
+        setcap_ret=$?
+
+        if [ ${setcap_ret} -eq 0 ]
+            then
+            # if we managed to setcap
+            # but we fail to execute apps.plugin
+            # trigger setuid to root
+            "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin" -v >/dev/null 2>&1
+            setcap_ret=$?
+        fi
+    fi
+
+    if [ ${setcap_ret} -ne 0 ]
         then
         # fix apps.plugin to be setuid to root
         run chown root "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
         run chmod 4755 "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/apps.plugin"
     fi
+else
+    run chown "${NETDATA_USER}:${NETDATA_USER}" "${NETDATA_LOG_DIR}"
+    run chown -R "${NETDATA_USER}:${NETDATA_USER}" "${NETDATA_PREFIX}/usr/libexec/netdata"
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type f -exec chmod 0755 {} \;
+    run find "${NETDATA_PREFIX}/usr/libexec/netdata" -type d -exec chmod 0755 {} \;
 fi
+
+# --- fix #1292 bug ---
+
+[ -d "${NETDATA_PREFIX}/usr/libexec" ] && run chmod a+rX "${NETDATA_PREFIX}/usr/libexec"
+[ -d "${NETDATA_PREFIX}/usr/share/netdata" ] && run chmod a+rX "${NETDATA_PREFIX}/usr/share/netdata"
+
 
 # -----------------------------------------------------------------------------
 # check if we can re-start netdata
@@ -702,7 +888,7 @@ if [ ${DONOTSTART} -eq 1 ]
             then
             chown "${NETDATA_USER}" "${NETDATA_PREFIX}/etc/netdata/netdata.conf"
         fi
-        chmod 0664 "${NETDATA_PREFIX}/etc/netdata/netdata.conf"
+        chmod 0644 "${NETDATA_PREFIX}/etc/netdata/netdata.conf"
     fi
     banner "is installed now!"
     echo >&2 "  enjoy real-time performance and health monitoring..."
@@ -713,9 +899,13 @@ fi
 # stop a running netdata
 
 isnetdata() {
-    [ -z "$1" -o ! -f "/proc/$1/stat" ] && return 1
-    [ "$(cat "/proc/$1/stat" | cut -d '(' -f 2 | cut -d ')' -f 1)" = "netdata" ] && return 0
-    return 1
+    if [ -d /proc/self ]
+    then
+        [ -z "$1" -o ! -f "/proc/$1/stat" ] && return 1
+        [ "$(cat "/proc/$1/stat" | cut -d '(' -f 2 | cut -d ')' -f 1)" = "netdata" ] && return 0
+        return 1
+    fi
+    return 0
 }
 
 stop_netdata_on_pid() {
@@ -838,7 +1028,7 @@ install_non_systemd_init() {
             run update-rc.d netdata enable && \
             installed_init_d=1
 
-        elif [ "${key}" = "CentOS release 6.8 (Final)" ]
+        elif [ "${key}" = "CentOS release 6.8 (Final)" -o "${key}" = "amzn-2016.09" ]
             then
             run cp system/netdata-init-d /etc/init.d/netdata && \
             run chmod 755 /etc/init.d/netdata && \
@@ -1148,6 +1338,34 @@ if [ $? -eq 0 -a "${NETDATA_ADDED_TO_DOCKER}" = "1" ]
     echo "by running:"
     echo "   gpasswd -d netdata docker"
 fi
+
+getent group nginx > /dev/null
+if [ $? -eq 0 -a "${NETDATA_ADDED_TO_NGINX}" = "1" ]
+    then
+    echo
+    echo "You may also want to remove the netdata user from the nginx group"
+    echo "by running:"
+    echo "   gpasswd -d netdata nginx"
+fi
+
+getent group varnish > /dev/null
+if [ $? -eq 0 -a "${NETDATA_ADDED_TO_VARNISH}" = "1" ]
+    then
+    echo
+    echo "You may also want to remove the netdata user from the varnish group"
+    echo "by running:"
+    echo "   gpasswd -d netdata varnish"
+fi
+
+getent group haproxy > /dev/null
+if [ $? -eq 0 -a "${NETDATA_ADDED_TO_HAPROXY}" = "1" ]
+    then
+    echo
+    echo "You may also want to remove the netdata user from the haproxy group"
+    echo "by running:"
+    echo "   gpasswd -d netdata haproxy"
+fi
+
 
 UNINSTALL
 chmod 750 netdata-uninstaller.sh

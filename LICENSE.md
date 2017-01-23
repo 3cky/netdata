@@ -1,6 +1,6 @@
 # Netdata
 
-Copyright 2014-2016, Costa Tsaousis.
+Copyright 2016-2017, Costa Tsaousis.
 Released under [GPL v3 or later](http://www.gnu.org/licenses/gpl-3.0.en.html).
 
 ---
@@ -73,10 +73,10 @@ connectivity is not available.
     [MIT License](http://rawgit.com/hhurz/tableExport.jquery.plugin/master/tableExport.js)
 
 
-- [NanoScroller](https://jamesflorentino.github.io/nanoScrollerJS/)
+- [perfect-scrollbar](https://jamesflorentino.github.io/nanoScrollerJS/)
 
-    Copyright 2012, James Florentino
-    [MIT License](https://github.com/jamesflorentino/nanoScrollerJS/blob/master/LICENSE)
+    Copyright 2016, Hyunje Alex Jun and other contributors
+    [MIT License](https://github.com/noraesae/perfect-scrollbar/blob/master/LICENSE)
 
 
 - [FontAwesome](https://fortawesome.github.io/Font-Awesome/)

@@ -24,27 +24,75 @@ dist_cache_DATA = .keep
 dist_varlib_DATA = .keep
 dist_registry_DATA = .keep
 dist_log_DATA = .keep
+if !MACOS
 plugins_PROGRAMS = apps.plugin
+endif
 
 netdata_SOURCES = \
 	appconfig.c appconfig.h \
+	adaptive_resortable_list.c adaptive_resortable_list.h \
 	avl.c avl.h \
+	backends.c backends.h \
+	clocks.c clocks.h \
 	common.c common.h \
 	daemon.c daemon.h \
 	dictionary.c dictionary.h \
 	eval.c eval.h \
 	global_statistics.c global_statistics.h \
 	health.c health.h \
-	ipc.c ipc.h \
+	inlined.h \
 	log.c log.h \
 	main.c main.h \
 	plugin_checks.c plugin_checks.h \
 	plugin_idlejitter.c plugin_idlejitter.h \
 	plugin_nfacct.c plugin_nfacct.h \
-	plugin_proc.c plugin_proc.h \
 	plugin_tc.c plugin_tc.h \
 	plugins_d.c plugins_d.h \
 	popen.c popen.h \
+	socket.c socket.h \
+	simple_pattern.c simple_pattern.h \
+	sys_fs_cgroup.c \
+	sys_devices_system_edac_mc.c \
+	sys_devices_system_node.c \
+	procfile.c procfile.h \
+	proc_self_mountinfo.c proc_self_mountinfo.h \
+	registry.c registry.h \
+	registry_internals.c registry_internals.h \
+	registry_url.c registry_url.h \
+	registry_person.c registry_person.h \
+	registry_machine.c registry_machine.h \
+	registry_init.c \
+	registry_db.c \
+	registry_log.c \
+	rrd.c rrd.h \
+	rrd2json.c rrd2json.h \
+	storage_number.c storage_number.h \
+	unit_test.c unit_test.h \
+	url.c url.h \
+	web_buffer.c web_buffer.h \
+	web_buffer_svg.c web_buffer_svg.h \
+	web_client.c web_client.h \
+	web_server.c web_server.h \
+	$(NULL)
+
+if FREEBSD
+netdata_SOURCES += \
+	plugin_freebsd.c plugin_freebsd.h \
+	freebsd_sysctl.c \
+	$(NULL)
+else
+if MACOS
+netdata_SOURCES += \
+	plugin_macos.c plugin_macos.h \
+	macos_sysctl.c \
+	macos_mach_smi.c \
+	macos_fw.c \
+	$(NULL)
+else
+netdata_SOURCES += \
+	ipc.c ipc.h \
+	plugin_proc.c plugin_proc.h \
+	plugin_proc_diskspace.c plugin_proc_diskspace.h \
 	proc_diskstats.c \
 	proc_interrupts.c \
 	proc_softirqs.c \
@@ -61,23 +109,14 @@ netdata_SOURCES = \
 	proc_net_stat_conntrack.c \
 	proc_net_stat_synproxy.c \
 	proc_stat.c \
-	proc_self_mountinfo.c proc_self_mountinfo.h \
 	proc_sys_kernel_random_entropy_avail.c \
 	proc_vmstat.c \
+	proc_uptime.c \
 	sys_kernel_mm_ksm.c \
-	sys_fs_cgroup.c \
-	procfile.c procfile.h \
-	registry.c registry.h \
-	rrd.c rrd.h \
-	rrd2json.c rrd2json.h \
-	storage_number.c storage_number.h \
-	unit_test.c unit_test.h \
-	url.c url.h \
-	web_buffer.c web_buffer.h \
-	web_buffer_svg.c web_buffer_svg.h \
-	web_client.c web_client.h \
-	web_server.c web_server.h \
 	$(NULL)
+endif
+endif
+
 netdata_LDADD = \
 	$(OPTIONAL_MATH_LIBS) \
 	$(OPTIONAL_NFACCT_LIBS) \
@@ -88,7 +127,9 @@ netdata_LDADD = \
 apps_plugin_SOURCES = \
 	apps_plugin.c \
 	avl.c avl.h \
+	clocks.c clocks.h \
 	common.c common.h \
+	inlined.h \
 	log.c log.h \
 	procfile.c procfile.h \
 	web_buffer.c web_buffer.h \

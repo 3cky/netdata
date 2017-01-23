@@ -121,11 +121,11 @@ struct web_client *web_client_create(int listener)
 void web_client_reset(struct web_client *w) {
     web_client_uncrock_socket(w);
 
-    debug(D_WEB_CLIENT, "%llu: Reseting client.", w->id);
+    debug(D_WEB_CLIENT, "%llu: Resetting client.", w->id);
 
     if(likely(w->last_url[0])) {
         struct timeval tv;
-        gettimeofday(&tv, NULL);
+        now_realtime_timeval(&tv);
 
         size_t size = (w->mode == WEB_CLIENT_MODE_FILECOPY)?w->response.rlen:w->response.data->len;
         size_t sent = size;
@@ -136,7 +136,7 @@ void web_client_reset(struct web_client *w) {
         // --------------------------------------------------------------------
         // global statistics
 
-        finished_web_request_statistics(usec_dt(&tv, &w->tv_in),
+        finished_web_request_statistics(dt_usec(&tv, &w->tv_in),
                                         w->stats_received_bytes,
                                         w->stats_sent_bytes,
                                         size,
@@ -152,9 +152,9 @@ void web_client_reset(struct web_client *w) {
         log_access("%llu: (sent/all = %zu/%zu bytes %0.0f%%, prep/sent/total = %0.2f/%0.2f/%0.2f ms) %s: %d '%s'",
                    w->id,
                    sent, size, -((size > 0) ? ((size - sent) / (double) size * 100.0) : 0.0),
-                   usec_dt(&w->tv_ready, &w->tv_in) / 1000.0,
-                   usec_dt(&tv, &w->tv_ready) / 1000.0,
-                   usec_dt(&tv, &w->tv_in) / 1000.0,
+                   dt_usec(&w->tv_ready, &w->tv_in) / 1000.0,
+                   dt_usec(&tv, &w->tv_ready) / 1000.0,
+                   dt_usec(&tv, &w->tv_in) / 1000.0,
                    (w->mode == WEB_CLIENT_MODE_FILECOPY) ? "filecopy" : ((w->mode == WEB_CLIENT_MODE_OPTIONS)
                                                                          ? "options" : "data"),
                    w->response.code,
@@ -308,7 +308,8 @@ int mysendfile(struct web_client *w, char *filename)
     for(s = filename; *s ;s++) {
         if( !isalnum(*s) && *s != '/' && *s != '.' && *s != '-' && *s != '_') {
             debug(D_WEB_CLIENT_ACCESS, "%llu: File '%s' is not acceptable.", w->id, filename);
-            buffer_sprintf(w->response.data, "File '%s' cannot be served. Filename contains invalid character '%c'", filename, *s);
+            buffer_sprintf(w->response.data, "Filename contains invalid characters: ");
+            buffer_strcat_htmlescape(w->response.data, filename);
             return 400;
         }
     }
@@ -316,7 +317,8 @@ int mysendfile(struct web_client *w, char *filename)
     // if the filename contains a .. refuse to serve it
     if(strstr(filename, "..") != 0) {
         debug(D_WEB_CLIENT_ACCESS, "%llu: File '%s' is not acceptable.", w->id, filename);
-        buffer_sprintf(w->response.data, "File '%s' cannot be served. Relative filenames with '..' in them are not supported.", filename);
+        buffer_strcat(w->response.data, "Relative filenames are not supported: ");
+        buffer_strcat_htmlescape(w->response.data, filename);
         return 400;
     }
 
@@ -328,21 +330,24 @@ int mysendfile(struct web_client *w, char *filename)
     struct stat stat;
     if(lstat(webfilename, &stat) != 0) {
         debug(D_WEB_CLIENT_ACCESS, "%llu: File '%s' is not found.", w->id, webfilename);
-        buffer_sprintf(w->response.data, "File '%s' does not exist, or is not accessible.", webfilename);
+        buffer_strcat(w->response.data, "File does not exist, or is not accessible: ");
+        buffer_strcat_htmlescape(w->response.data, webfilename);
         return 404;
     }
 
     // check if the file is owned by expected user
     if(stat.st_uid != web_files_uid()) {
         error("%llu: File '%s' is owned by user %u (expected user %u). Access Denied.", w->id, webfilename, stat.st_uid, web_files_uid());
-        buffer_sprintf(w->response.data, "Access to file '%s' is not permitted.", webfilename);
+        buffer_strcat(w->response.data, "Access to file is not permitted: ");
+        buffer_strcat_htmlescape(w->response.data, webfilename);
         return 403;
     }
 
     // check if the file is owned by expected group
     if(stat.st_gid != web_files_gid()) {
         error("%llu: File '%s' is owned by group %u (expected group %u). Access Denied.", w->id, webfilename, stat.st_gid, web_files_gid());
-        buffer_sprintf(w->response.data, "Access to file '%s' is not permitted.", webfilename);
+        buffer_strcat(w->response.data, "Access to file is not permitted: ");
+        buffer_strcat_htmlescape(w->response.data, webfilename);
         return 403;
     }
 
@@ -353,7 +358,8 @@ int mysendfile(struct web_client *w, char *filename)
 
     if((stat.st_mode & S_IFMT) != S_IFREG) {
         error("%llu: File '%s' is not a regular file. Access Denied.", w->id, webfilename);
-        buffer_sprintf(w->response.data, "Access to file '%s' is not permitted.", webfilename);
+        buffer_strcat(w->response.data, "Access to file is not permitted: ");
+        buffer_strcat_htmlescape(w->response.data, webfilename);
         return 403;
     }
 
@@ -365,12 +371,14 @@ int mysendfile(struct web_client *w, char *filename)
         if(errno == EBUSY || errno == EAGAIN) {
             error("%llu: File '%s' is busy, sending 307 Moved Temporarily to force retry.", w->id, webfilename);
             buffer_sprintf(w->response.header, "Location: /" WEB_PATH_FILE "/%s\r\n", filename);
-            buffer_sprintf(w->response.data, "The file '%s' is currently busy. Please try again later.", webfilename);
+            buffer_strcat(w->response.data, "File is currently busy, please try again later: ");
+            buffer_strcat_htmlescape(w->response.data, webfilename);
             return 307;
         }
         else {
             error("%llu: Cannot open file '%s'.", w->id, webfilename);
-            buffer_sprintf(w->response.data, "Cannot open file '%s'.", webfilename);
+            buffer_strcat(w->response.data, "Cannot open file: ");
+            buffer_strcat_htmlescape(w->response.data, webfilename);
             return 404;
         }
     }
@@ -406,7 +414,11 @@ int mysendfile(struct web_client *w, char *filename)
     w->wait_send = 0;
     buffer_flush(w->response.data);
     w->response.rlen = stat.st_size;
+#ifdef __APPLE__
+    w->response.data->date = stat.st_mtimespec.tv_sec;
+#else
     w->response.data->date = stat.st_mtim.tv_sec;
+#endif /* __APPLE__ */
     buffer_cacheable(w->response.data);
 
     return 200;
@@ -416,7 +428,7 @@ int mysendfile(struct web_client *w, char *filename)
 #ifdef NETDATA_WITH_ZLIB
 void web_client_enable_deflate(struct web_client *w, int gzip) {
     if(unlikely(w->response.zinitialized)) {
-        error("%llu: Compression has already be initialized for this client.", w->id);
+        debug(D_DEFLATE, "%llu: Compression has already be initialized for this client.", w->id);
         return;
     }
 
@@ -733,7 +745,8 @@ int web_client_api_request_single_chart(struct web_client *w, char *url, void ca
     RRDSET *st = rrdset_find(chart);
     if(!st) st = rrdset_find_byname(chart);
     if(!st) {
-        buffer_sprintf(w->response.data, "Chart '%s' is not found.", chart);
+        buffer_strcat(w->response.data, "Chart is not found: ");
+        buffer_strcat_htmlescape(w->response.data, chart);
         ret = 404;
         goto cleanup;
     }
@@ -759,6 +772,49 @@ int web_client_api_request_v1_charts(struct web_client *w, char *url)
     w->response.data->contenttype = CT_APPLICATION_JSON;
     rrd_stats_api_v1_charts(w->response.data);
     return 200;
+}
+
+int web_client_api_request_v1_allmetrics(struct web_client *w, char *url)
+{
+    int format = ALLMETRICS_SHELL;
+
+    while(url) {
+        char *value = mystrsep(&url, "?&");
+        if (!value || !*value) continue;
+
+        char *name = mystrsep(&value, "=");
+        if(!name || !*name) continue;
+        if(!value || !*value) continue;
+
+        if(!strcmp(name, "format")) {
+            if(!strcmp(value, ALLMETRICS_FORMAT_SHELL))
+                format = ALLMETRICS_SHELL;
+            else if(!strcmp(value, ALLMETRICS_FORMAT_PROMETHEUS))
+                format = ALLMETRICS_PROMETHEUS;
+            else
+                format = 0;
+        }
+    }
+
+    buffer_flush(w->response.data);
+    buffer_no_cacheable(w->response.data);
+
+    switch(format) {
+        case ALLMETRICS_SHELL:
+            w->response.data->contenttype = CT_TEXT_PLAIN;
+            rrd_stats_api_v1_charts_allmetrics_shell(w->response.data);
+            return 200;
+
+        case ALLMETRICS_PROMETHEUS:
+            w->response.data->contenttype = CT_PROMETHEUS;
+            rrd_stats_api_v1_charts_allmetrics_prometheus(w->response.data);
+            return 200;
+
+        default:
+            w->response.data->contenttype = CT_TEXT_PLAIN;
+            buffer_strcat(w->response.data, "Which format? Only '" ALLMETRICS_FORMAT_SHELL "' and '" ALLMETRICS_FORMAT_PROMETHEUS "' is currently supported.");
+            return 400;
+    }
 }
 
 int web_client_api_request_v1_chart(struct web_client *w, char *url)
@@ -856,12 +912,12 @@ int web_client_api_request_v1_badge(struct web_client *w, char *url) {
         }
     }
 
-    long long multiply  = (multiply_str  && *multiply_str )?atol(multiply_str):1;
-    long long divide    = (divide_str    && *divide_str   )?atol(divide_str):1;
-    long long before    = (before_str    && *before_str   )?atol(before_str):0;
-    long long after     = (after_str     && *after_str    )?atol(after_str):-st->update_every;
-    int       points    = (points_str    && *points_str   )?atoi(points_str):1;
-    int       precision = (precision_str && *precision_str)?atoi(precision_str):-1;
+    long long multiply  = (multiply_str  && *multiply_str )?str2l(multiply_str):1;
+    long long divide    = (divide_str    && *divide_str   )?str2l(divide_str):1;
+    long long before    = (before_str    && *before_str   )?str2l(before_str):0;
+    long long after     = (after_str     && *after_str    )?str2l(after_str):-st->update_every;
+    int       points    = (points_str    && *points_str   )?str2i(points_str):1;
+    int       precision = (precision_str && *precision_str)?str2i(precision_str):-1;
 
     if(!multiply) multiply = 1;
     if(!divide) divide = 1;
@@ -878,7 +934,7 @@ int web_client_api_request_v1_badge(struct web_client *w, char *url) {
             }
         }
         else {
-            refresh = atoi(refresh_str);
+            refresh = str2i(refresh_str);
             if(refresh < 0) refresh = -refresh;
         }
     }
@@ -931,7 +987,7 @@ int web_client_api_request_v1_badge(struct web_client *w, char *url) {
 
         if (refresh > 0) {
             buffer_sprintf(w->response.header, "Refresh: %d\r\n", refresh);
-            w->response.data->expires = time(NULL) + refresh;
+            w->response.data->expires = now_realtime_sec() + refresh;
         }
         else buffer_no_cacheable(w->response.data);
 
@@ -980,7 +1036,7 @@ int web_client_api_request_v1_badge(struct web_client *w, char *url) {
         ret = 500;
 
         // if the collected value is too old, don't calculate its value
-        if (rrdset_last_entry_t(st) >= (time(NULL) - (st->update_every * st->gap_when_lost_iterations_above)))
+        if (rrdset_last_entry_t(st) >= (now_realtime_sec() - (st->update_every * st->gap_when_lost_iterations_above)))
             ret = rrd2value(st,
                             w->response.data,
                             &n,
@@ -1003,7 +1059,7 @@ int web_client_api_request_v1_badge(struct web_client *w, char *url) {
         }
         else if (refresh > 0) {
             buffer_sprintf(w->response.header, "Refresh: %d\r\n", refresh);
-            w->response.data->expires = time(NULL) + refresh;
+            w->response.data->expires = now_realtime_sec() + refresh;
         }
         else buffer_no_cacheable(w->response.data);
 
@@ -1130,14 +1186,15 @@ int web_client_api_request_v1_data(struct web_client *w, char *url)
     RRDSET *st = rrdset_find(chart);
     if(!st) st = rrdset_find_byname(chart);
     if(!st) {
-        buffer_sprintf(w->response.data, "Chart '%s' is not found.", chart);
+        buffer_strcat(w->response.data, "Chart is not found: ");
+        buffer_strcat_htmlescape(w->response.data, chart);
         ret = 404;
         goto cleanup;
     }
 
-    long long before = (before_str && *before_str)?atol(before_str):0;
-    long long after  = (after_str  && *after_str) ?atol(after_str):0;
-    int       points = (points_str && *points_str)?atoi(points_str):0;
+    long long before = (before_str && *before_str)?str2l(before_str):0;
+    long long after  = (after_str  && *after_str) ?str2l(after_str):0;
+    int       points = (points_str && *points_str)?str2i(points_str):0;
 
     debug(D_WEB_CLIENT, "%llu: API command 'data' for chart '%s', dimensions '%s', after '%lld', before '%lld', points '%d', group '%d', format '%u', options '0x%08x'"
             , w->id
@@ -1199,8 +1256,6 @@ cleanup:
 }
 
 
-#define REGISTRY_VERIFY_COOKIES_GUID "give-me-back-this-cookie-now--please"
-
 int web_client_api_request_v1_registry(struct web_client *w, char *url)
 {
     static uint32_t hash_action = 0, hash_access = 0, hash_hello = 0, hash_delete = 0, hash_search = 0,
@@ -1225,7 +1280,7 @@ int web_client_api_request_v1_registry(struct web_client *w, char *url)
 */
     }
 
-    char person_guid[36 + 1] = "";
+    char person_guid[GUID_LEN + 1] = "";
 
     debug(D_WEB_CLIENT, "%llu: API v1 registry with URL '%s'", w->id, url);
 
@@ -1309,100 +1364,50 @@ int web_client_api_request_v1_registry(struct web_client *w, char *url)
     }
 
     if(action == 'A' && (!machine_guid || !machine_url || !url_name)) {
+        error("Invalid registry request - access requires these parameters: machine ('%s'), url ('%s'), name ('%s')",
+                machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", url_name?url_name:"UNSET");
         buffer_flush(w->response.data);
-        buffer_sprintf(w->response.data, "Invalid registry request - access requires these parameters: machine ('%s'), url ('%s'), name ('%s')",
-                       machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", url_name?url_name:"UNSET");
+        buffer_strcat(w->response.data, "Invalid registry Access request.");
         return 400;
     }
     else if(action == 'D' && (!machine_guid || !machine_url || !delete_url)) {
+        error("Invalid registry request - delete requires these parameters: machine ('%s'), url ('%s'), delete_url ('%s')",
+                machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", delete_url?delete_url:"UNSET");
         buffer_flush(w->response.data);
-        buffer_sprintf(w->response.data, "Invalid registry request - delete requires these parameters: machine ('%s'), url ('%s'), delete_url ('%s')",
-                       machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", delete_url?delete_url:"UNSET");
+        buffer_strcat(w->response.data, "Invalid registry Delete request.");
         return 400;
     }
     else if(action == 'S' && (!machine_guid || !machine_url || !search_machine_guid)) {
+        error("Invalid registry request - search requires these parameters: machine ('%s'), url ('%s'), for ('%s')",
+                machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", search_machine_guid?search_machine_guid:"UNSET");
         buffer_flush(w->response.data);
-        buffer_sprintf(w->response.data, "Invalid registry request - search requires these parameters: machine ('%s'), url ('%s'), for ('%s')",
-                       machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", search_machine_guid?search_machine_guid:"UNSET");
+        buffer_strcat(w->response.data, "Invalid registry Search request.");
         return 400;
     }
     else if(action == 'W' && (!machine_guid || !machine_url || !to_person_guid)) {
+        error("Invalid registry request - switching identity requires these parameters: machine ('%s'), url ('%s'), to ('%s')",
+                machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", to_person_guid?to_person_guid:"UNSET");
         buffer_flush(w->response.data);
-        buffer_sprintf(w->response.data, "Invalid registry request - switching identity requires these parameters: machine ('%s'), url ('%s'), to ('%s')",
-                       machine_guid?machine_guid:"UNSET", machine_url?machine_url:"UNSET", to_person_guid?to_person_guid:"UNSET");
+        buffer_strcat(w->response.data, "Invalid registry Switch request.");
         return 400;
     }
 
     switch(action) {
         case 'A':
             w->tracking_required = 1;
-            if(registry_verify_cookies_redirects() > 0 && (!cookie || !person_guid[0])) {
-                buffer_flush(w->response.data);
-                registry_set_cookie(w, REGISTRY_VERIFY_COOKIES_GUID);
-                w->response.data->contenttype = CT_APPLICATION_JSON;
-                buffer_sprintf(w->response.data, "{ \"status\": \"redirect\", \"registry\": \"%s\" }", registry_to_announce());
-                return 200;
-
-/*
- * it seems that web browsers are ignoring 307 (Moved Temporarily)
- * under certain conditions, when using CORS
- * so this is commented and we use application level redirects instead
- *
-                redirects++;
-
-                if(redirects > registry_verify_cookies_redirects()) {
-                    buffer_flush(w->response.data);
-                    buffer_sprintf(w->response.data, "Your browser does not support cookies");
-                    return 400;
-                }
-
-                char *encoded_url = url_encode(machine_url);
-                if(!encoded_url) {
-                    error("%llu: Cannot URL encode string '%s'", w->id, machine_url);
-                    return 500;
-                }
-
-                char *encoded_name = url_encode(url_name);
-                if(!encoded_name) {
-                    free(encoded_url);
-                    error("%llu: Cannot URL encode string '%s'", w->id, url_name);
-                    return 500;
-                }
-
-                char *encoded_guid = url_encode(machine_guid);
-                if(!encoded_guid) {
-                    free(encoded_url);
-                    free(encoded_name);
-                    error("%llu: Cannot URL encode string '%s'", w->id, machine_guid);
-                    return 500;
-                }
-
-                buffer_sprintf(w->response.header, "Location: %s/api/v1/registry?action=access&machine=%s&name=%s&url=%s&redirects=%d\r\n",
-                               registry_to_announce(), encoded_guid, encoded_name, encoded_url, redirects);
-
-                free(encoded_guid);
-                free(encoded_name);
-                free(encoded_url);
-                return 307
-*/
-            }
-
-            if(unlikely(cookie && person_guid[0] && !strcmp(person_guid, REGISTRY_VERIFY_COOKIES_GUID)))
-                person_guid[0] = '\0';
-
-            return registry_request_access_json(w, person_guid, machine_guid, machine_url, url_name, time(NULL));
+            return registry_request_access_json(w, person_guid, machine_guid, machine_url, url_name, now_realtime_sec());
 
         case 'D':
             w->tracking_required = 1;
-            return registry_request_delete_json(w, person_guid, machine_guid, machine_url, delete_url, time(NULL));
+            return registry_request_delete_json(w, person_guid, machine_guid, machine_url, delete_url, now_realtime_sec());
 
         case 'S':
             w->tracking_required = 1;
-            return registry_request_search_json(w, person_guid, machine_guid, machine_url, search_machine_guid, time(NULL));
+            return registry_request_search_json(w, person_guid, machine_guid, machine_url, search_machine_guid, now_realtime_sec());
 
         case 'W':
             w->tracking_required = 1;
-            return registry_request_switch_json(w, person_guid, machine_guid, machine_url, to_person_guid, time(NULL));
+            return registry_request_switch_json(w, person_guid, machine_guid, machine_url, to_person_guid, now_realtime_sec());
 
         case 'H':
             return registry_request_hello_json(w);
@@ -1415,7 +1420,7 @@ int web_client_api_request_v1_registry(struct web_client *w, char *url)
 }
 
 int web_client_api_request_v1(struct web_client *w, char *url) {
-    static uint32_t hash_data = 0, hash_chart = 0, hash_charts = 0, hash_registry = 0, hash_badge = 0, hash_alarms = 0, hash_alarm_log = 0, hash_alarm_variables = 0;
+    static uint32_t hash_data = 0, hash_chart = 0, hash_charts = 0, hash_registry = 0, hash_badge = 0, hash_alarms = 0, hash_alarm_log = 0, hash_alarm_variables = 0, hash_raw = 0;
 
     if(unlikely(hash_data == 0)) {
         hash_data = simple_hash("data");
@@ -1426,6 +1431,7 @@ int web_client_api_request_v1(struct web_client *w, char *url) {
         hash_alarms = simple_hash("alarms");
         hash_alarm_log = simple_hash("alarm_log");
         hash_alarm_variables = simple_hash("alarm_variables");
+        hash_raw = simple_hash("allmetrics");
     }
 
     // get the command
@@ -1458,15 +1464,19 @@ int web_client_api_request_v1(struct web_client *w, char *url) {
         else if(hash == hash_alarm_variables && !strcmp(tok, "alarm_variables"))
             return web_client_api_request_v1_alarm_variables(w, url);
 
+        else if(hash == hash_raw && !strcmp(tok, "allmetrics"))
+            return web_client_api_request_v1_allmetrics(w, url);
+
         else {
             buffer_flush(w->response.data);
-            buffer_sprintf(w->response.data, "Unsupported v1 API command: %s", tok);
+            buffer_strcat(w->response.data, "Unsupported v1 API command: ");
+            buffer_strcat_htmlescape(w->response.data, tok);
             return 404;
         }
     }
     else {
         buffer_flush(w->response.data);
-        buffer_sprintf(w->response.data, "API v1 command?");
+        buffer_sprintf(w->response.data, "Which API v1 command?");
         return 400;
     }
 }
@@ -1481,7 +1491,8 @@ int web_client_api_request(struct web_client *w, char *url)
             return web_client_api_request_v1(w, url);
         else {
             buffer_flush(w->response.data);
-            buffer_sprintf(w->response.data, "Unsupported API version: %s", tok);
+            buffer_strcat(w->response.data, "Unsupported API version: ");
+            buffer_strcat_htmlescape(w->response.data, tok);
             return 404;
         }
     }
@@ -1494,6 +1505,12 @@ int web_client_api_request(struct web_client *w, char *url)
 
 int web_client_api_old_data_request(struct web_client *w, char *url, int datasource_type)
 {
+    if(!url || !*url) {
+        buffer_flush(w->response.data);
+        buffer_sprintf(w->response.data, "Incomplete request.");
+        return 400;
+    }
+
     RRDSET *st = NULL;
 
     char *args = strchr(url, '?');
@@ -1533,13 +1550,13 @@ int web_client_api_old_data_request(struct web_client *w, char *url, int datasou
     if(url) {
         // parse the lines required
         tok = mystrsep(&url, "/");
-        if(tok) lines = atoi(tok);
+        if(tok) lines = str2i(tok);
         if(lines < 1) lines = 1;
     }
     if(url) {
         // parse the group count required
         tok = mystrsep(&url, "/");
-        if(tok && *tok) group_count = atoi(tok);
+        if(tok && *tok) group_count = str2i(tok);
         if(group_count < 1) group_count = 1;
         //if(group_count > save_history / 20) group_count = save_history / 20;
     }
@@ -1556,13 +1573,13 @@ int web_client_api_old_data_request(struct web_client *w, char *url, int datasou
     if(url) {
         // parse after time
         tok = mystrsep(&url, "/");
-        if(tok && *tok) after = strtoul(tok, NULL, 10);
+        if(tok && *tok) after = str2ul(tok);
         if(after < 0) after = 0;
     }
     if(url) {
         // parse before time
         tok = mystrsep(&url, "/");
-        if(tok && *tok) before = strtoul(tok, NULL, 10);
+        if(tok && *tok) before = str2ul(tok);
         if(before < 0) before = 0;
     }
     if(url) {
@@ -1720,6 +1737,9 @@ const char *web_content_type_to_string(uint8_t contenttype) {
 
         case CT_IMAGE_ICNS:
             return "image/icns";
+
+        case CT_PROMETHEUS:
+            return "text/plain; version=0.0.4";
 
         default:
         case CT_TEXT_PLAIN:
@@ -1931,7 +1951,7 @@ void web_client_process(struct web_client *w) {
 #endif
 
     // start timing us
-    gettimeofday(&w->tv_in, NULL);
+    now_realtime_timeval(&w->tv_in);
 
     if(unlikely(!hash_api)) {
         hash_api = simple_hash("api");
@@ -2077,7 +2097,6 @@ void web_client_process(struct web_client *w) {
 
                     error("web request to exit received.");
                     netdata_cleanup_and_exit(0);
-                    netdata_exit = 1;
                 }
                 else if(hash == hash_debug && strcmp(tok, "debug") == 0) {
                     buffer_flush(w->response.data);
@@ -2092,14 +2111,16 @@ void web_client_process(struct web_client *w) {
                         if(!st) st = rrdset_find(tok);
                         if(!st) {
                             code = 404;
-                            buffer_sprintf(w->response.data, "Chart %s is not found.\r\n", tok);
+                            buffer_strcat(w->response.data, "Chart is not found: ");
+                            buffer_strcat_htmlescape(w->response.data, tok);
                             debug(D_WEB_CLIENT_ACCESS, "%llu: %s is not found.", w->id, tok);
                         }
                         else {
                             code = 200;
                             debug_flags |= D_RRD_STATS;
                             st->debug = !st->debug;
-                            buffer_sprintf(w->response.data, "Chart %s has now debug %s.\r\n", tok, st->debug?"enabled":"disabled");
+                            buffer_sprintf(w->response.data, "Chart has now debug %s: ", st->debug?"enabled":"disabled");
+                            buffer_strcat_htmlescape(w->response.data, tok);
                             debug(D_WEB_CLIENT_ACCESS, "%llu: debug for %s is %s.", w->id, tok, st->debug?"enabled":"disabled");
                         }
                     }
@@ -2141,7 +2162,7 @@ void web_client_process(struct web_client *w) {
         }
     }
 
-    gettimeofday(&w->tv_ready, NULL);
+    now_realtime_timeval(&w->tv_ready);
     w->response.sent = 0;
     w->response.code = code;
 

@@ -44,7 +44,7 @@ struct tc_class {
 
     char name_updated;
     char updated;   // updated bytes
-    int seen;       // seen in the tc list (even without bytes)
+    int  unupdated; // the number of times, this has been found un-updated
 
     struct tc_class *next;
     struct tc_class *prev;
@@ -100,8 +100,8 @@ avl_tree tc_device_root_index = {
         tc_device_compare
 };
 
-#define tc_device_index_add(st) avl_insert(&tc_device_root_index, (avl *)(st))
-#define tc_device_index_del(st) avl_remove(&tc_device_root_index, (avl *)(st))
+#define tc_device_index_add(st) (struct tc_device *)avl_insert(&tc_device_root_index, (avl *)(st))
+#define tc_device_index_del(st) (struct tc_device *)avl_remove(&tc_device_root_index, (avl *)(st))
 
 static inline struct tc_device *tc_device_index_find(const char *id, uint32_t hash) {
     struct tc_device tmp;
@@ -121,8 +121,8 @@ static int tc_class_compare(void* a, void* b) {
     else return strcmp(((struct tc_class *)a)->id, ((struct tc_class *)b)->id);
 }
 
-#define tc_class_index_add(st, rd) avl_insert(&((st)->classes_index), (avl *)(rd))
-#define tc_class_index_del(st, rd) avl_remove(&((st)->classes_index), (avl *)(rd))
+#define tc_class_index_add(st, rd) (struct tc_class *)avl_insert(&((st)->classes_index), (avl *)(rd))
+#define tc_class_index_del(st, rd) (struct tc_class *)avl_remove(&((st)->classes_index), (avl *)(rd))
 
 static inline struct tc_class *tc_class_index_find(struct tc_device *st, const char *id, uint32_t hash) {
     struct tc_class tmp;
@@ -144,9 +144,10 @@ static inline void tc_class_free(struct tc_device *n, struct tc_class *c) {
     if(c->next) c->next->prev = c->prev;
     if(c->prev) c->prev->next = c->next;
 
-    debug(D_TC_LOOP, "Removing from device '%s' class '%s', parentid '%s', leafid '%s', seen=%d", n->id, c->id, c->parentid?c->parentid:"", c->leafid?c->leafid:"", c->seen);
+    debug(D_TC_LOOP, "Removing from device '%s' class '%s', parentid '%s', leafid '%s', unused=%d", n->id, c->id, c->parentid?c->parentid:"", c->leafid?c->leafid:"", c->unupdated);
 
-    tc_class_index_del(n, c);
+    if(unlikely(tc_class_index_del(n, c) != c))
+        error("plugin_tc: INTERNAL ERROR: attempt remove class '%s' from device '%s': removed a different calls", c->id, n->id);
 
     freez(c->id);
     freez(c->name);
@@ -159,7 +160,7 @@ static inline void tc_device_classes_cleanup(struct tc_device *d) {
     static int cleanup_every = 999;
 
     if(unlikely(cleanup_every > 0)) {
-        cleanup_every = (int) config_get_number("plugin:tc", "cleanup unused classes every", 60);
+        cleanup_every = (int) config_get_number("plugin:tc", "cleanup unused classes every", 120);
         if(cleanup_every < 0) cleanup_every = -cleanup_every;
     }
 
@@ -168,7 +169,7 @@ static inline void tc_device_classes_cleanup(struct tc_device *d) {
 
     struct tc_class *c = d->classes;
     while(c) {
-        if(unlikely(cleanup_every > 0 && c->seen >= cleanup_every)) {
+        if(unlikely(cleanup_every && c->unupdated >= cleanup_every)) {
             struct tc_class *nc = c->next;
             tc_class_free(d, c);
             c = nc;
@@ -203,6 +204,11 @@ static inline void tc_device_commit(struct tc_device *d) {
     for(c = d->classes ; c ; c = c->next) {
         c->isleaf = 1;
         c->hasparent = 0;
+
+        if(unlikely(!c->updated))
+            c->unupdated++;
+        else
+            c->unupdated = 0;
     }
 
     // mark the classes as leafs and parents
@@ -256,22 +262,22 @@ static inline void tc_device_commit(struct tc_device *d) {
     if(unlikely(d->enabled == (char)-1)) {
         char var_name[CONFIG_MAX_NAME + 1];
         snprintfz(var_name, CONFIG_MAX_NAME, "qos for %s", d->id);
-        d->enabled         = config_get_boolean_ondemand("plugin:tc", var_name, enable_new_interfaces);
+        d->enabled         = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_new_interfaces);
 
         snprintfz(var_name, CONFIG_MAX_NAME, "traffic chart for %s", d->id);
-        d->enabled_bytes   = config_get_boolean_ondemand("plugin:tc", var_name, enable_bytes);
+        d->enabled_bytes   = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_bytes);
 
         snprintfz(var_name, CONFIG_MAX_NAME, "packets chart for %s", d->id);
-        d->enabled_packets = config_get_boolean_ondemand("plugin:tc", var_name, enable_packets);
+        d->enabled_packets = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_packets);
 
         snprintfz(var_name, CONFIG_MAX_NAME, "dropped packets chart for %s", d->id);
-        d->enabled_dropped = config_get_boolean_ondemand("plugin:tc", var_name, enable_dropped);
+        d->enabled_dropped = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_dropped);
 
         snprintfz(var_name, CONFIG_MAX_NAME, "tokens chart for %s", d->id);
-        d->enabled_tokens = config_get_boolean_ondemand("plugin:tc", var_name, enable_tokens);
+        d->enabled_tokens = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_tokens);
 
         snprintfz(var_name, CONFIG_MAX_NAME, "ctokens chart for %s", d->id);
-        d->enabled_ctokens = config_get_boolean_ondemand("plugin:tc", var_name, enable_ctokens);
+        d->enabled_ctokens = (char)config_get_boolean_ondemand("plugin:tc", var_name, enable_ctokens);
     }
 
     debug(D_TC_LOOP, "TC: evaluating TC device '%s'. enabled = %d/%d (bytes: %d/%d, packets: %d/%d, dropped: %d/%d, tokens: %d/%d, ctokens: %d/%d), classes = %d (bytes = %llu, packets = %llu, dropped = %llu, tokens = %llu, ctokens = %llu).",
@@ -321,8 +327,6 @@ static inline void tc_device_commit(struct tc_device *d) {
                 if(unlikely(!c->updated)) continue;
 
                 if(c->isleaf && c->hasparent) {
-                    c->seen++;
-
                     if(unlikely(!c->rd_bytes)) {
                         c->rd_bytes = rrddim_find(d->st_bytes, c->id);
                         if(unlikely(!c->rd_bytes)) {
@@ -619,7 +623,8 @@ static inline struct tc_device *tc_device_create(char *id)
         d->enabled = (char)-1;
 
         avl_init(&d->classes_index, tc_class_compare);
-        tc_device_index_add(d);
+        if(unlikely(tc_device_index_add(d) != d))
+            error("plugin_tc: INTERNAL ERROR: removing device '%s' removed a different device.", d->id);
 
         if(!tc_device_root) {
             tc_device_root = d;
@@ -660,11 +665,9 @@ static inline struct tc_class *tc_class_add(struct tc_device *n, char *id, char 
             c->leaf_hash = simple_hash(c->leafid);
         }
 
-        tc_class_index_add(n, c);
+        if(unlikely(tc_class_index_add(n, c) != c))
+            error("plugin_tc: INTERNAL ERROR: attempt index class '%s' on device '%s': already exists", c->id, n->id);
     }
-
-    c->seen = 1;
-
     return(c);
 }
 
@@ -677,7 +680,8 @@ static inline void tc_device_free(struct tc_device *n)
         else tc_device_root = n->prev;
     }
 
-    tc_device_index_del(n);
+    if(unlikely(tc_device_index_del(n) != n))
+        error("plugin_tc: INTERNAL ERROR: removing device '%s' removed a different device.", n->id);
 
     while(n->classes) tc_class_free(n, n->classes);
 
@@ -743,9 +747,9 @@ static inline void tc_split_words(char *str, char **words, int max_words) {
     while(i < max_words) words[i++] = NULL;
 }
 
-pid_t tc_child_pid = 0;
+volatile pid_t tc_child_pid = 0;
 void *tc_main(void *ptr) {
-    (void)ptr;
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
 
     info("TC thread created with task id %d", gettid());
 
@@ -789,11 +793,10 @@ void *tc_main(void *ptr) {
         snprintfz(buffer, TC_LINE_MAX, "exec %s %d", tc_script, rrd_update_every);
         debug(D_TC_LOOP, "executing '%s'", buffer);
 
-        fp = mypopen(buffer, &tc_child_pid);
+        fp = mypopen(buffer, (pid_t *)&tc_child_pid);
         if(unlikely(!fp)) {
             error("TC: Cannot popen(\"%s\", \"r\").", buffer);
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         while(fgets(buffer, TC_LINE_MAX, fp) != NULL) {
@@ -884,7 +887,7 @@ void *tc_main(void *ptr) {
             else if(unlikely(device && class && first_hash == SENT_HASH && strcmp(words[0], "Sent") == 0)) {
                 // debug(D_TC_LOOP, "SENT line '%s'", words[1]);
                 if(likely(words[1] && *words[1])) {
-                    class->bytes = strtoull(words[1], NULL, 10);
+                    class->bytes = str2ull(words[1]);
                     class->updated = 1;
                 }
                 else {
@@ -892,35 +895,35 @@ void *tc_main(void *ptr) {
                 }
 
                 if(likely(words[3] && *words[3]))
-                    class->packets = strtoull(words[3], NULL, 10);
+                    class->packets = str2ull(words[3]);
 
                 if(likely(words[6] && *words[6]))
-                    class->dropped = strtoull(words[6], NULL, 10);
+                    class->dropped = str2ull(words[6]);
 
                 if(likely(words[8] && *words[8]))
-                    class->overlimits = strtoull(words[8], NULL, 10);
+                    class->overlimits = str2ull(words[8]);
 
                 if(likely(words[10] && *words[10]))
-                    class->requeues = strtoull(words[8], NULL, 10);
+                    class->requeues = str2ull(words[8]);
             }
             else if(unlikely(device && class && class->updated && first_hash == LENDED_HASH && strcmp(words[0], "lended:") == 0)) {
                 // debug(D_TC_LOOP, "LENDED line '%s'", words[1]);
                 if(likely(words[1] && *words[1]))
-                    class->lended = strtoull(words[1], NULL, 10);
+                    class->lended = str2ull(words[1]);
 
                 if(likely(words[3] && *words[3]))
-                    class->borrowed = strtoull(words[3], NULL, 10);
+                    class->borrowed = str2ull(words[3]);
 
                 if(likely(words[5] && *words[5]))
-                    class->giants = strtoull(words[5], NULL, 10);
+                    class->giants = str2ull(words[5]);
             }
             else if(unlikely(device && class && class->updated && first_hash == TOKENS_HASH && strcmp(words[0], "tokens:") == 0)) {
                 // debug(D_TC_LOOP, "TOKENS line '%s'", words[1]);
                 if(likely(words[1] && *words[1]))
-                    class->tokens = strtoull(words[1], NULL, 10);
+                    class->tokens = str2ull(words[1]);
 
                 if(likely(words[3] && *words[3]))
-                    class->ctokens = strtoull(words[3], NULL, 10);
+                    class->ctokens = str2ull(words[3]);
             }
             else if(unlikely(device && first_hash == SETDEVICENAME_HASH && strcmp(words[0], "SETDEVICENAME") == 0)) {
                 // debug(D_TC_LOOP, "SETDEVICENAME line '%s'", words[1]);
@@ -983,7 +986,7 @@ void *tc_main(void *ptr) {
         }
 
         // fgets() failed or loop broke
-        int code = mypclose(fp, tc_child_pid);
+        int code = mypclose(fp, (pid_t)tc_child_pid);
         tc_child_pid = 0;
 
         if(unlikely(device)) {
@@ -994,8 +997,7 @@ void *tc_main(void *ptr) {
 
         if(unlikely(netdata_exit)) {
             tc_device_free_all();
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         if(code == 1 || code == 127) {
@@ -1004,13 +1006,16 @@ void *tc_main(void *ptr) {
             error("TC: tc-qos-helper.sh exited with code %d. Disabling it.", code);
 
             tc_device_free_all();
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         sleep((unsigned int) rrd_update_every);
     }
 
+cleanup:
+    info("TC thread exiting");
+
+    static_thread->enabled = 0;
     pthread_exit(NULL);
     return NULL;
 }

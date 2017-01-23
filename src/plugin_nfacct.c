@@ -55,7 +55,7 @@ static int nfacct_callback(const struct nlmsghdr *nlh, void *data) {
 }
 
 void *nfacct_main(void *ptr) {
-    if(ptr) { ; }
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
 
     info("NFACCT thread created with task id %d", gettid());
 
@@ -70,30 +70,27 @@ void *nfacct_main(void *ptr) {
     struct nlmsghdr *nlh = NULL;
     unsigned int seq = 0, portid = 0;
 
-    seq = time(NULL) - 1;
+    seq = now_realtime_sec() - 1;
 
     nl  = mnl_socket_open(NETLINK_NETFILTER);
     if(!nl) {
         error("nfacct.plugin: mnl_socket_open() failed");
-        pthread_exit(NULL);
-        return NULL;
+        goto cleanup;
     }
 
     if(mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-        mnl_socket_close(nl);
         error("nfacct.plugin: mnl_socket_bind() failed");
-        pthread_exit(NULL);
-        return NULL;
+        goto cleanup;
     }
     portid = mnl_socket_get_portid(nl);
 
     // ------------------------------------------------------------------------
 
     struct timeval last, now;
-    unsigned long long usec = 0, susec = 0;
+    usec_t usec = 0, susec = 0;
     RRDSET *st = NULL;
 
-    gettimeofday(&last, NULL);
+    now_realtime_timeval(&last);
 
     // ------------------------------------------------------------------------
 
@@ -104,16 +101,13 @@ void *nfacct_main(void *ptr) {
 
         nlh = nfacct_nlmsg_build_hdr(buf, NFNL_MSG_ACCT_GET, NLM_F_DUMP, seq);
         if(!nlh) {
-            mnl_socket_close(nl);
             error("nfacct.plugin: nfacct_nlmsg_build_hdr() failed");
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         if(mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
             error("nfacct.plugin: mnl_socket_send");
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         if(nfacct_list) nfacct_list->len = 0;
@@ -125,14 +119,13 @@ void *nfacct_main(void *ptr) {
 
         if (ret == -1) {
             error("nfacct.plugin: error communicating with kernel.");
-            pthread_exit(NULL);
-            return NULL;
+            goto cleanup;
         }
 
         // --------------------------------------------------------------------
 
-        gettimeofday(&now, NULL);
-        usec = usec_dt(&now, &last) - susec;
+        now_realtime_timeval(&now);
+        usec = dt_usec(&now, &last) - susec;
         debug(D_NFACCT_LOOP, "nfacct.plugin: last loop took %llu usec (worked for %llu, sleeped for %llu).", usec + susec, usec, susec);
 
         if(usec < (rrd_update_every * 1000000ULL / 2ULL)) susec = (rrd_update_every * 1000000ULL) - usec;
@@ -191,7 +184,12 @@ void *nfacct_main(void *ptr) {
         memmove(&last, &now, sizeof(struct timeval));
     }
 
-    mnl_socket_close(nl);
+cleanup:
+    info("NFACCT thread exiting");
+
+    if(nl) mnl_socket_close(nl);
+
+    static_thread->enabled = 0;
     pthread_exit(NULL);
     return NULL;
 }

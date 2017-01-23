@@ -10,16 +10,26 @@ SUFFIXES = .in
 dist_python_SCRIPTS = \
     apache.chart.py \
     apache_cache.chart.py \
+    bind_rndc.chart.py \
     cpufreq.chart.py \
+    cpuidle.chart.py \
     dovecot.chart.py \
+    elasticsearch.chart.py \
     example.chart.py \
     exim.chart.py \
+    fail2ban.chart.py \
+    freeradius.chart.py \
+    gunicorn_log.chart.py \
+    haproxy.chart.py \
     hddtemp.chart.py \
     ipfs.chart.py \
+    isc_dhcpd.chart.py \
+    mdstat.chart.py \
     memcached.chart.py \
     mysql.chart.py \
     nginx.chart.py \
     nginx_log.chart.py \
+    ovpn_status_log.chart.py \
     phpfpm.chart.py \
     postfix.chart.py \
     postgres.chart.py \
@@ -28,6 +38,7 @@ dist_python_SCRIPTS = \
     sensors.chart.py \
     squid.chart.py \
     tomcat.chart.py \
+    varnish.chart.py \
     python-modules-installer.sh \
     cso_games.chart.py \
     cso_nodes.chart.py \

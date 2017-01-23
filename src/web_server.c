@@ -7,6 +7,8 @@ char *listen_fds_names[MAX_LISTEN_FDS] = { [0 ... 99] = NULL };
 int listen_port = LISTEN_PORT;
 int web_server_mode = WEB_SERVER_MODE_MULTI_THREADED;
 
+static int shown_server_socket_error = 0;
+
 #ifdef NETDATA_INTERNAL_CHECKS
 static void log_allocations(void)
 {
@@ -90,6 +92,7 @@ int create_listen_socket4(const char *ip, int port, int listen_backlog) {
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if(sock < 0) {
         error("IPv4 socket() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
@@ -105,6 +108,7 @@ int create_listen_socket4(const char *ip, int port, int listen_backlog) {
     int ret = inet_pton(AF_INET, ip, (void *)&name.sin_addr.s_addr);
     if(ret != 1) {
         error("Failed to convert IP '%s' to a valid IPv4 address.", ip);
+        shown_server_socket_error = 1;
         close(sock);
         return -1;
     }
@@ -112,12 +116,14 @@ int create_listen_socket4(const char *ip, int port, int listen_backlog) {
     if(bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
         close(sock);
         error("IPv4 bind() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
     if(listen(sock, listen_backlog) < 0) {
         close(sock);
-        fatal("IPv4 listen() on ip '%s' port %d failed.", ip, port);
+        error("IPv4 listen() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
@@ -135,6 +141,7 @@ int create_listen_socket6(const char *ip, int port, int listen_backlog) {
     sock = socket(AF_INET6, SOCK_STREAM, 0);
     if (sock < 0) {
         error("IPv6 socket() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
@@ -154,6 +161,7 @@ int create_listen_socket6(const char *ip, int port, int listen_backlog) {
     int ret = inet_pton(AF_INET6, ip, (void *)&name.sin6_addr.s6_addr);
     if(ret != 1) {
         error("Failed to convert IP '%s' to a valid IPv6 address.", ip);
+        shown_server_socket_error = 1;
         close(sock);
         return -1;
     }
@@ -163,12 +171,14 @@ int create_listen_socket6(const char *ip, int port, int listen_backlog) {
     if (bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
         close(sock);
         error("IPv6 bind() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
     if (listen(sock, listen_backlog) < 0) {
         close(sock);
         error("IPv6 listen() on ip '%s' port %d failed.", ip, port);
+        shown_server_socket_error = 1;
         return -1;
     }
 
@@ -179,6 +189,7 @@ int create_listen_socket6(const char *ip, int port, int listen_backlog) {
 static inline int add_listen_socket(int fd, const char *ip, int port) {
     if(listen_fds_count >= MAX_LISTEN_FDS) {
         error("Too many listening sockets. Failed to add listening socket at ip '%s' port %d", ip, port);
+        shown_server_socket_error = 1;
         close(fd);
         return -1;
     }
@@ -290,7 +301,7 @@ static inline int bind_to_one(const char *definition, int default_port, int list
         }
 
         if (fd == -1)
-            error("Cannot bind to ip '%s', port %d", rip, default_port);
+            error("Cannot bind to ip '%s', port %d", rip, rport);
         else {
             add_listen_socket(fd, rip, rport);
             added++;
@@ -303,6 +314,8 @@ static inline int bind_to_one(const char *definition, int default_port, int list
 }
 
 int create_listen_sockets(void) {
+    shown_server_socket_error = 0;
+
     listen_backlog = (int) config_get_number("global", "http port listen backlog", LISTEN_BACKLOG);
 
     if(config_exists("global", "bind socket to IP") && !config_exists("global", "bind to"))
@@ -340,6 +353,11 @@ int create_listen_sockets(void) {
 
     if(!listen_fds_count)
         fatal("Cannot listen on any socket. Exiting...");
+    else if(shown_server_socket_error) {
+        size_t i;
+        for(i = 0; i < listen_fds_count ;i++)
+            info("Listen socket %s opened.", listen_fds_names[i]);
+    }
 
     return (int)listen_fds_count;
 }
@@ -372,7 +390,7 @@ static inline void cleanup_web_clients(void) {
 #define CLEANUP_EVERY_EVENTS 100
 
 void *socket_listen_main_multi_threaded(void *ptr) {
-    (void)ptr;
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
 
     web_server_mode = WEB_SERVER_MODE_MULTI_THREADED;
     info("Multi-threaded WEB SERVER thread created with task id %d", gettid());
@@ -452,6 +470,10 @@ void *socket_listen_main_multi_threaded(void *ptr) {
     debug(D_WEB_CLIENT, "LISTENER: exit!");
     close_listen_sockets();
 
+    freez(fds);
+
+    static_thread->enabled = 0;
+    pthread_exit(NULL);
     return NULL;
 }
 
@@ -500,7 +522,7 @@ static inline int single_threaded_unlink_client(struct web_client *w, fd_set *if
 }
 
 void *socket_listen_main_single_threaded(void *ptr) {
-    (void)ptr;
+    struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
 
     web_server_mode = WEB_SERVER_MODE_SINGLE_THREADED;
 
@@ -619,5 +641,8 @@ void *socket_listen_main_single_threaded(void *ptr) {
 
     debug(D_WEB_CLIENT, "LISTENER: exit!");
     close_listen_sockets();
+
+    static_thread->enabled = 0;
+    pthread_exit(NULL);
     return NULL;
 }

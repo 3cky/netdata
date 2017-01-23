@@ -232,6 +232,9 @@ typedef struct rrdcalctemplate {
     char *context;
     uint32_t hash_context;
 
+    char *family_match;
+    SIMPLE_PATTERN *family_pattern;
+
     char *source;                   // the source of this alarm
     char *units;                    // the units of the alarm
     char *info;                     // a short description of the alarm
@@ -357,5 +360,7 @@ void health_api_v1_chart_variables2json(RRDSET *st, BUFFER *buf);
 extern RRDVAR *rrdvar_custom_host_variable_create(RRDHOST *host, const char *name);
 extern void rrdvar_custom_host_variable_destroy(RRDHOST *host, const char *name);
 extern void rrdvar_custom_host_variable_set(RRDVAR *rv, calculated_number value);
+
+extern const char *rrdcalc_status2string(int status);
 
 #endif //NETDATA_HEALTH_H

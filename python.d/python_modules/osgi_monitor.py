@@ -28,7 +28,7 @@ class OsgiMonitorService(UrlService):
         """
         try:
             parsed = json.loads(raw)
-        except e:
+        except:
             return None
 
         try:

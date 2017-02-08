@@ -7,10 +7,11 @@ priority = 60000
 retries = 60
 
 # charts order (can be overridden if you want less charts, or different order)
-ORDER = ['datasource.pool', 'datasource.perf', 'conn.service', 'conn.auth', 'auth.service', \
-        'game.tables', 'game.authz', 'game.pool', 'game.perf', \
-        'game.bots.num', 'game.bots.pool', 'tournament.pool', 'tournament.perf', \
-        'scheduler.pools', 'system.heap', 'system.threads']
+ORDER = ['datasource.pool', 'datasource.perf', 'conn.service', 'conn.auth',
+         'conn.service.messages', 'auth.service', 'game.tables',
+         'game.authz', 'game.pool', 'game.perf', 'game.bots.num',
+         'game.bots.pool', 'tournament.pool', 'tournament.perf',
+         'scheduler.pools', 'system.heap', 'system.threads']
 
 CHARTS = {
     'system.heap': {
@@ -45,6 +46,11 @@ CHARTS = {
         'lines': [
             ['connection.number.total', 'total'],
             ['connection.number.local', 'local']
+        ]},
+    'conn.service.messages': {
+        'options': [None, 'Connections (messages by service)', 'messages/s', 'Connections (messages)', 'cso.conn.service.msg', 'line'],
+        'lines': [
+            # created dynamically
         ]},
     'conn.auth': {
         'options': [None, 'Connections', 'connections', 'Connections (auth)', 'cso.conn.auth', 'area'],
@@ -120,6 +126,32 @@ class Service(OsgiMonitorService):
         OsgiMonitorService.__init__(self, configuration=configuration, name=name)
         self.order = ORDER
         self.definitions = CHARTS
+        self.created_dims = []
+        self.started = False
+
+    def _create_charts(self, data):
+        for d in sorted([d for d in data if d.startswith('scheduler.pool.load.avg')]):
+            self.definitions['scheduler.pools']['lines'].append([d, d.rsplit('.', 1)[-1], 'absolute', 1, 1000])
+
+    def _update_charts(self, data):
+        chart_id = 'conn.service.messages'
+        dim_prefix = 'connection.msg.rcvd.svc'
+        new_dims = [d for d in data if d.startswith(dim_prefix) and d not in self.created_dims]
+        if new_dims:
+            if self.started:
+                self._line("CHART " + self.chart_name + "." + chart_id)
+            for dim in new_dims:
+                dim_params = [dim, dim.rsplit('.', 1)[-1], 'incremental']
+                self.definitions[chart_id]['lines'].append(dim_params)
+                if self.started:
+                    self.dimension(*dim_params)
+                self.created_dims.append(dim)
+
+    def _get_data(self):
+        data = OsgiMonitorService._get_data(self)
+        if data is not None:
+            self._update_charts(data)
+        return data
 
     def check(self):
         """
@@ -133,11 +165,8 @@ class Service(OsgiMonitorService):
         if data is None:
             return False
 
-        names = []
-        for name in data:
-            if name.startswith('scheduler.pool.load.avg'):
-                names.append(name)
-        for name in sorted(names):
-            self.definitions['scheduler.pools']['lines'].append([name, name.rsplit('.', 1)[-1], 'absolute', 1, 1000])
+        self._create_charts(data)
+
+        self.started = True
 
         return True

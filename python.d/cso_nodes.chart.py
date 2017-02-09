@@ -120,6 +120,11 @@ CHARTS = {
         ]},
 }
 
+SERVICES = {
+    '1': 'connection', '2': 'game', '3': 'user auth', '4': 'user profile', '5': 'instant messaging',
+    '6': 'app update', '8': 'money', '12': 'advertisement', '13': 'photo', '15': 'friends',
+    '16': 'tournament', '17': 'payment', '18': 'player stats', '25': 'action', '26': 'user career',
+}
 
 class Service(OsgiMonitorService):
     def __init__(self, configuration=None, name=None):
@@ -141,7 +146,9 @@ class Service(OsgiMonitorService):
             if self.started:
                 self._line("CHART " + self.chart_name + "." + chart_id)
             for dim in new_dims:
-                dim_params = [dim, dim.rsplit('.', 1)[-1], 'incremental']
+                dim_id = dim.rsplit('.', 1)[-1]
+                dim_name = SERVICES[dim_id] if dim_id in SERVICES else dim_id
+                dim_params = [dim, dim_name, 'incremental']
                 self.definitions[chart_id]['lines'].append(dim_params)
                 if self.started:
                     self.dimension(*dim_params)

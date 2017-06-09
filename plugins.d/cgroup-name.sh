@@ -89,7 +89,7 @@ function get_name_api {
         return 1
     fi
     info "Running API command: /containers/${DOCKERID}/json"
-    JSON=$(echo -e "GET /containers/${DOCKERID}/json HTTP/1.0\r\n" | nc -U /var/run/docker.sock | egrep '^{.*')
+    JSON=$(echo -e "GET /containers/${DOCKERID}/json HTTP/1.0\r\n" | nc -U /var/run/docker.sock | grep '^{.*')
     NAME=$(echo $JSON | jq -r .Name,.Config.Hostname | grep -v null | head -n1 | sed 's|^/||')
     return 0
 }
@@ -98,6 +98,8 @@ if [ -z "${NAME}" ]
     then
     if [[ "${CGROUP}" =~ ^.*docker[-_/\.][a-fA-F0-9]+[-_\.]?.*$ ]]
         then
+        # docker containers
+
         DOCKERID="$( echo "${CGROUP}" | sed "s|^.*docker[-_/]\([a-fA-F0-9]\+\)[-_\.]\?.*$|\1|" )"
         # echo "DOCKERID=${DOCKERID}"
 
@@ -117,6 +119,11 @@ if [ -z "${NAME}" ]
                 info "docker container '${DOCKERID}' is named '${NAME}'"
             fi
         fi
+    elif [[ "${CGROUP}" =~ machine.slice_machine.*-qemu ]]
+        then
+        # libvirtd / qemu virtual machines
+
+        NAME="$(echo ${CGROUP} | sed 's/machine.slice_machine.*-qemu//; s/\/x2d//; s/\/x2d/\-/g; s/\.scope//g')"
     fi
 
     [ -z "${NAME}" ] && NAME="${CGROUP}"

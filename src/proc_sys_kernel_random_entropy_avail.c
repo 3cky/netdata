@@ -7,7 +7,7 @@ int do_proc_sys_kernel_random_entropy_avail(int update_every, usec_t dt) {
 
     if(unlikely(!ff)) {
         char filename[FILENAME_MAX + 1];
-        snprintfz(filename, FILENAME_MAX, "%s%s", global_host_prefix, "/proc/sys/kernel/random/entropy_avail");
+        snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/proc/sys/kernel/random/entropy_avail");
         ff = procfile_open(config_get("plugin:proc:/proc/sys/kernel/random/entropy_avail", "filename to monitor", filename), "", PROCFILE_FLAG_DEFAULT);
         if(unlikely(!ff)) return 1;
     }
@@ -17,10 +17,11 @@ int do_proc_sys_kernel_random_entropy_avail(int update_every, usec_t dt) {
 
     unsigned long long entropy = str2ull(procfile_lineword(ff, 0, 0));
 
-    RRDSET *st = rrdset_find_bytype("system", "entropy");
+    RRDSET *st = rrdset_find_bytype_localhost("system", "entropy");
     if(unlikely(!st)) {
-        st = rrdset_create("system", "entropy", NULL, "entropy", NULL, "Available Entropy", "entropy", 1000, update_every, RRDSET_TYPE_LINE);
-        rrddim_add(st, "entropy", NULL, 1, 1, RRDDIM_ABSOLUTE);
+        st = rrdset_create_localhost("system", "entropy", NULL, "entropy", NULL, "Available Entropy", "entropy", 1000
+                                     , update_every, RRDSET_TYPE_LINE);
+        rrddim_add(st, "entropy", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
     }
     else rrdset_next(st);
 

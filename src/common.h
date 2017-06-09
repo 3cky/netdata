@@ -40,6 +40,7 @@
 #include <strings.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <sys/ioctl.h>
 
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
@@ -67,9 +68,9 @@
 #include <syslog.h>
 #include <sys/mman.h>
 
-#if !(defined(__FreeBSD__) || defined(__APPLE__))
+#ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
-#endif /* __FreeBSD__ || __APPLE__*/
+#endif
 
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -107,6 +108,10 @@
 
 #ifdef NETDATA_WITH_ZLIB
 #include <zlib.h>
+#endif
+
+#ifdef HAVE_CAPABILITY
+#include <sys/capability.h>
 #endif
 
 // ----------------------------------------------------------------------------
@@ -164,10 +169,11 @@
 // ----------------------------------------------------------------------------
 // netdata include files
 
-#include "simple_pattern.h"
-#include "avl.h"
 #include "clocks.h"
 #include "log.h"
+#include "locks.h"
+#include "simple_pattern.h"
+#include "avl.h"
 #include "global_statistics.h"
 #include "storage_number.h"
 #include "web_buffer.h"
@@ -184,21 +190,28 @@
 #include "plugin_nfacct.h"
 
 #if defined(__FreeBSD__)
+#include <pthread_np.h>
 #include "plugin_freebsd.h"
+#define NETDATA_OS_TYPE "freebsd"
 #elif defined(__APPLE__)
 #include "plugin_macos.h"
+#define NETDATA_OS_TYPE "macos"
 #else
 #include "plugin_proc.h"
 #include "plugin_proc_diskspace.h"
+#define NETDATA_OS_TYPE "linux"
 #endif /* __FreeBSD__, __APPLE__*/
 
-#include "plugin_tc.h"
-#include "plugins_d.h"
+#include "statistical.h"
 #include "socket.h"
 #include "eval.h"
 #include "health.h"
 #include "rrd.h"
+#include "plugin_tc.h"
+#include "plugins_d.h"
+#include "statsd.h"
 #include "rrd2json.h"
+#include "rrd2json_api_old.h"
 #include "web_client.h"
 #include "web_server.h"
 #include "registry.h"
@@ -209,15 +222,28 @@
 #include "backends.h"
 #include "inlined.h"
 #include "adaptive_resortable_list.h"
+#include "rrdpush.h"
+#include "web_api_v1.h"
+#include "web_api_old.h"
+
+extern char *netdata_configured_hostname;
+extern char *netdata_configured_config_dir;
+extern char *netdata_configured_log_dir;
+extern char *netdata_configured_plugins_dir;
+extern char *netdata_configured_web_dir;
+extern char *netdata_configured_cache_dir;
+extern char *netdata_configured_varlib_dir;
+extern char *netdata_configured_home_dir;
+extern char *netdata_configured_host_prefix;
 
 extern void netdata_fix_chart_id(char *s);
 extern void netdata_fix_chart_name(char *s);
 
 extern void strreverse(char* begin, char* end);
 extern char *mystrsep(char **ptr, char *s);
-extern char *trim(char *s);
+extern char *trim(char *s); // remove leading and trailing spaces; may return NULL
+extern char *trim_all(char *buffer); // like trim(), but also remove duplicate spaces inside the string; may return NULL
 
-extern char *strncpyz(char *dst, const char *src, size_t n);
 extern int  vsnprintfz(char *dst, size_t n, const char *fmt, va_list args);
 extern int  snprintfz(char *dst, size_t n, const char *fmt, ...) PRINTFLIKE(3, 4);
 
@@ -249,7 +275,6 @@ extern int savememory(const char *filename, void *mem, size_t size);
 
 extern int fd_is_valid(int fd);
 
-extern char *global_host_prefix;
 extern int enable_ksm;
 
 extern pid_t gettid(void);
@@ -268,6 +293,12 @@ extern pid_t get_system_pid_max(void);
 extern unsigned int hz;
 extern void get_system_HZ(void);
 
+extern int recursively_delete_dir(const char *path, const char *reason);
+
+extern volatile sig_atomic_t netdata_exit;
+extern const char *os_type;
+
+extern const char *program_version;
 
 /* fix for alpine linux */
 #ifndef RUSAGE_THREAD

@@ -11,12 +11,6 @@ void *macos_main(void *ptr) {
     if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
         error("Cannot set pthread cancel state to ENABLE.");
 
-    // disable (by default) various interface that are not needed
-    /*
-    config_get_boolean("plugin:proc:/proc/net/dev:lo", "enabled", 0);
-    config_get_boolean("plugin:proc:/proc/net/dev:fireqos_monitor", "enabled", 0);
-    */
-
     // when ZERO, attempt to do it
     int vdo_cpu_netdata             = !config_get_boolean("plugin:macos", "netdata server resources", 1);
     int vdo_macos_sysctl            = !config_get_boolean("plugin:macos", "sysctl", 1);
@@ -28,15 +22,11 @@ void *macos_main(void *ptr) {
     unsigned long long sutime_macos_mach_smi = 0ULL;
     unsigned long long sutime_macos_iokit = 0ULL;
 
-    usec_t step = rrd_update_every * USEC_PER_SEC;
+    usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
+    heartbeat_t hb;
+    heartbeat_init(&hb);
     for(;;) {
-        usec_t now = now_realtime_usec();
-        usec_t next = now - (now % step) + step;
-
-        while(now < next) {
-            sleep_usec(next - now);
-            now = now_realtime_usec();
-        }
+        usec_t hb_dt = heartbeat_next(&hb, step);
 
         if(unlikely(netdata_exit)) break;
 
@@ -44,25 +34,19 @@ void *macos_main(void *ptr) {
 
         if(!vdo_macos_sysctl) {
             debug(D_PROCNETDEV_LOOP, "MACOS: calling do_macos_sysctl().");
-            now = now_realtime_usec();
-            vdo_macos_sysctl = do_macos_sysctl(rrd_update_every, (sutime_macos_sysctl > 0)?now - sutime_macos_sysctl:0ULL);
-            sutime_macos_sysctl = now;
+            vdo_macos_sysctl = do_macos_sysctl(localhost->rrd_update_every, hb_dt);
         }
         if(unlikely(netdata_exit)) break;
 
         if(!vdo_macos_mach_smi) {
             debug(D_PROCNETDEV_LOOP, "MACOS: calling do_macos_mach_smi().");
-            now = now_realtime_usec();
-            vdo_macos_mach_smi = do_macos_mach_smi(rrd_update_every, (sutime_macos_mach_smi > 0)?now - sutime_macos_mach_smi:0ULL);
-            sutime_macos_mach_smi = now;
+            vdo_macos_mach_smi = do_macos_mach_smi(localhost->rrd_update_every, hb_dt);
         }
         if(unlikely(netdata_exit)) break;
 
         if(!vdo_macos_iokit) {
             debug(D_PROCNETDEV_LOOP, "MACOS: calling do_macos_iokit().");
-            now = now_realtime_usec();
-            vdo_macos_iokit = do_macos_iokit(rrd_update_every, (sutime_macos_iokit > 0)?now - sutime_macos_iokit:0ULL);
-            sutime_macos_iokit = now;
+            vdo_macos_iokit = do_macos_iokit(localhost->rrd_update_every, hb_dt);
         }
         if(unlikely(netdata_exit)) break;
 

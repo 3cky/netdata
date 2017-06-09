@@ -20,40 +20,39 @@ KSM_NAME_VALUE values[] = {
 };
 
 int do_sys_kernel_mm_ksm(int update_every, usec_t dt) {
+    (void)dt;
     static procfile *ff_pages_shared = NULL, *ff_pages_sharing = NULL, *ff_pages_unshared = NULL, *ff_pages_volatile = NULL, *ff_pages_to_scan = NULL;
     static long page_size = -1;
-
-    if(dt) {};
 
     if(page_size == -1)
         page_size = sysconf(_SC_PAGESIZE);
 
     if(!ff_pages_shared) {
-        snprintfz(values[PAGES_SHARED].filename, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/kernel/mm/ksm/pages_shared");
+        snprintfz(values[PAGES_SHARED].filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/kernel/mm/ksm/pages_shared");
         snprintfz(values[PAGES_SHARED].filename, FILENAME_MAX, "%s", config_get("plugin:proc:/sys/kernel/mm/ksm", "/sys/kernel/mm/ksm/pages_shared", values[PAGES_SHARED].filename));
         ff_pages_shared = procfile_open(values[PAGES_SHARED].filename, " \t:", PROCFILE_FLAG_DEFAULT);
     }
 
     if(!ff_pages_sharing) {
-        snprintfz(values[PAGES_SHARING].filename, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/kernel/mm/ksm/pages_sharing");
+        snprintfz(values[PAGES_SHARING].filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/kernel/mm/ksm/pages_sharing");
         snprintfz(values[PAGES_SHARING].filename, FILENAME_MAX, "%s", config_get("plugin:proc:/sys/kernel/mm/ksm", "/sys/kernel/mm/ksm/pages_sharing", values[PAGES_SHARING].filename));
         ff_pages_sharing = procfile_open(values[PAGES_SHARING].filename, " \t:", PROCFILE_FLAG_DEFAULT);
     }
 
     if(!ff_pages_unshared) {
-        snprintfz(values[PAGES_UNSHARED].filename, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/kernel/mm/ksm/pages_unshared");
+        snprintfz(values[PAGES_UNSHARED].filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/kernel/mm/ksm/pages_unshared");
         snprintfz(values[PAGES_UNSHARED].filename, FILENAME_MAX, "%s", config_get("plugin:proc:/sys/kernel/mm/ksm", "/sys/kernel/mm/ksm/pages_unshared", values[PAGES_UNSHARED].filename));
         ff_pages_unshared = procfile_open(values[PAGES_UNSHARED].filename, " \t:", PROCFILE_FLAG_DEFAULT);
     }
 
     if(!ff_pages_volatile) {
-        snprintfz(values[PAGES_VOLATILE].filename, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/kernel/mm/ksm/pages_volatile");
+        snprintfz(values[PAGES_VOLATILE].filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/kernel/mm/ksm/pages_volatile");
         snprintfz(values[PAGES_VOLATILE].filename, FILENAME_MAX, "%s", config_get("plugin:proc:/sys/kernel/mm/ksm", "/sys/kernel/mm/ksm/pages_volatile", values[PAGES_VOLATILE].filename));
         ff_pages_volatile = procfile_open(values[PAGES_VOLATILE].filename, " \t:", PROCFILE_FLAG_DEFAULT);
     }
 
     if(!ff_pages_to_scan) {
-        snprintfz(values[PAGES_TO_SCAN].filename, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/kernel/mm/ksm/pages_to_scan");
+        snprintfz(values[PAGES_TO_SCAN].filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/kernel/mm/ksm/pages_to_scan");
         snprintfz(values[PAGES_TO_SCAN].filename, FILENAME_MAX, "%s", config_get("plugin:proc:/sys/kernel/mm/ksm", "/sys/kernel/mm/ksm/pages_to_scan", values[PAGES_TO_SCAN].filename));
         ff_pages_to_scan = procfile_open(values[PAGES_TO_SCAN].filename, " \t:", PROCFILE_FLAG_DEFAULT);
     }
@@ -91,15 +90,16 @@ int do_sys_kernel_mm_ksm(int update_every, usec_t dt) {
 
     // --------------------------------------------------------------------
 
-    st = rrdset_find("mem.ksm");
+    st = rrdset_find_localhost("mem.ksm");
     if(!st) {
-        st = rrdset_create("mem", "ksm", NULL, "ksm", NULL, "Kernel Same Page Merging", "MB", 5000, update_every, RRDSET_TYPE_AREA);
+        st = rrdset_create_localhost("mem", "ksm", NULL, "ksm", NULL, "Kernel Same Page Merging", "MB", 5000
+                                     , update_every, RRDSET_TYPE_AREA);
 
-        rrddim_add(st, "shared", NULL, 1, 1024 * 1024, RRDDIM_ABSOLUTE);
-        rrddim_add(st, "unshared", NULL, -1, 1024 * 1024, RRDDIM_ABSOLUTE);
-        rrddim_add(st, "sharing", NULL, 1, 1024 * 1024, RRDDIM_ABSOLUTE);
-        rrddim_add(st, "volatile", NULL, -1, 1024 * 1024, RRDDIM_ABSOLUTE);
-        rrddim_add(st, "to_scan", "to scan", -1, 1024 * 1024, RRDDIM_ABSOLUTE);
+        rrddim_add(st, "shared", NULL, 1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
+        rrddim_add(st, "unshared", NULL, -1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
+        rrddim_add(st, "sharing", NULL, 1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
+        rrddim_add(st, "volatile", NULL, -1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
+        rrddim_add(st, "to_scan", "to scan", -1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
     }
     else rrdset_next(st);
 
@@ -110,12 +110,13 @@ int do_sys_kernel_mm_ksm(int update_every, usec_t dt) {
     rrddim_set(st, "to_scan", pages_to_scan * page_size);
     rrdset_done(st);
 
-    st = rrdset_find("mem.ksm_savings");
+    st = rrdset_find_localhost("mem.ksm_savings");
     if(!st) {
-        st = rrdset_create("mem", "ksm_savings", NULL, "ksm", NULL, "Kernel Same Page Merging Savings", "MB", 5001, update_every, RRDSET_TYPE_AREA);
+        st = rrdset_create_localhost("mem", "ksm_savings", NULL, "ksm", NULL, "Kernel Same Page Merging Savings", "MB"
+                                     , 5001, update_every, RRDSET_TYPE_AREA);
 
-        rrddim_add(st, "savings", NULL, -1, 1024 * 1024, RRDDIM_ABSOLUTE);
-        rrddim_add(st, "offered", NULL, 1, 1024 * 1024, RRDDIM_ABSOLUTE);
+        rrddim_add(st, "savings", NULL, -1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
+        rrddim_add(st, "offered", NULL, 1, 1024 * 1024, RRD_ALGORITHM_ABSOLUTE);
     }
     else rrdset_next(st);
 
@@ -123,11 +124,12 @@ int do_sys_kernel_mm_ksm(int update_every, usec_t dt) {
     rrddim_set(st, "offered", offered * page_size);
     rrdset_done(st);
 
-    st = rrdset_find("mem.ksm_ratios");
+    st = rrdset_find_localhost("mem.ksm_ratios");
     if(!st) {
-        st = rrdset_create("mem", "ksm_ratios", NULL, "ksm", NULL, "Kernel Same Page Merging Effectiveness", "percentage", 5002, update_every, RRDSET_TYPE_LINE);
+        st = rrdset_create_localhost("mem", "ksm_ratios", NULL, "ksm", NULL, "Kernel Same Page Merging Effectiveness"
+                                     , "percentage", 5002, update_every, RRDSET_TYPE_LINE);
 
-        rrddim_add(st, "savings", NULL, 1, 10000, RRDDIM_ABSOLUTE);
+        rrddim_add(st, "savings", NULL, 1, 10000, RRD_ALGORITHM_ABSOLUTE);
     }
     else rrdset_next(st);
 

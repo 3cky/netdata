@@ -4,9 +4,7 @@
 
 from base import SimpleService
 from re import compile
-from os import access as is_executable, X_OK
 from subprocess import Popen, PIPE
-
 
 # default module values (can be overridden per job in `config`)
 # update_every = 2
@@ -80,17 +78,11 @@ CHARTS = {'backend_health':
               'options': [None, 'Varnish uptime', 'seconds', 'Uptime', 'varnish.uptime', 'line']}
 }
 
-DIRECTORIES = ['/bin/', '/usr/bin/', '/sbin/', '/usr/sbin/']
-
 
 class Service(SimpleService):
     def __init__(self, configuration=None, name=None):
         SimpleService.__init__(self, configuration=configuration, name=name)
-        try:
-            self.varnish = [''.join([directory, 'varnishstat']) for directory in DIRECTORIES
-                         if is_executable(''.join([directory, 'varnishstat']), X_OK)][0]
-        except IndexError:
-            self.varnish = False
+        self.varnish = self.find_binary('varnishstat')
         self.rgx_all = compile(r'([A-Z]+\.)?([\d\w_.]+)\s+(\d+)')
         # Could be
         # VBE.boot.super_backend.pipe_hdrbyte (new)
@@ -104,7 +96,7 @@ class Service(SimpleService):
     def check(self):
         # Cant start without 'varnishstat' command
         if not self.varnish:
-            self.error('\'varnishstat\' command was not found in %s or not executable by netdata' % DIRECTORIES)
+            self.error('Can\'t locate \'varnishstat\' binary or binary is not executable by netdata')
             return False
 
         # If command is present and we can execute it we need to make sure..
@@ -145,7 +137,7 @@ class Service(SimpleService):
         if not raw_data:
             return None
 
-        return raw_data
+        return raw_data.decode()
 
     def _get_data(self):
         """
@@ -160,10 +152,10 @@ class Service(SimpleService):
             return None
 
         # 1. ALL data from 'varnishstat -1'. t - type(MAIN, MEMPOOL etc)
-        to_netdata = {k: int(v) for t, k, v in data_all}
+        to_netdata = dict([(k, int(v)) for t, k, v in data_all])
         
         # 2. ADD backend statistics
-        to_netdata.update({'_'.join([n, k]): int(v) for n, k, v in data_backend})
+        to_netdata.update(dict([('_'.join([n, k]), int(v)) for n, k, v in data_backend]))
 
         # 3. ADD additional keys to dict
         # 3.1 Cache hit/miss/hitpass OVERALL in percent

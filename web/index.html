@@ -35,7 +35,7 @@
     <meta property="og:site_name"          content="netdata"/>
     <meta property="og:title"              content="Get control of your Linux Servers. Simple. Effective. Awesome." />
     <meta property="og:description"        content="Unparalleled insights, in real-time, of everything happening on your Linux systems and applications, with stunning, interactive web dashboards and powerful performance and health alarms." />
-    <meta property="og:image"              content="https://cloud.githubusercontent.com/assets/2662304/20910305/65d10354-bb69-11e6-8128-c44b547517b4.png" />
+    <meta property="og:image"              content="https://cloud.githubusercontent.com/assets/2662304/22945737/e98cd0c6-f2fd-11e6-96f1-5501934b0955.png" />
     <meta property="og:image:type"         content="image/png" />
     <meta property="fb:app_id"             content="1200089276712916" />
 
@@ -508,16 +508,36 @@
         // --------------------------------------------------------------------
         // check options that should be processed before loading netdata.js
 
+        var localStorageTested = -1;
+        function localStorageTest() {
+            if(localStorageTested !== -1)
+                return localStorageTested;
+
+            if(typeof Storage !== "undefined" && typeof localStorage === 'object') {
+                var test = 'test';
+                try {
+                    localStorage.setItem(test, test);
+                    localStorage.removeItem(test);
+                    localStorageTested = true;
+                }
+                catch (e) {
+                    localStorageTested = false;
+                }
+            }
+            else
+                localStorageTested = false;
+
+            return localStorageTested;
+        }
+
         function loadLocalStorage(name) {
             var ret = null;
 
             try {
-                if(typeof Storage !== "undefined" && typeof localStorage === 'object')
+                if(localStorageTest() === true)
                     ret = localStorage.getItem(name);
             }
-            catch(error) {
-                ;
-            }
+            catch(error) {}
 
             if(typeof ret === 'undefined' || ret === null)
                 return null;
@@ -530,14 +550,12 @@
         function saveLocalStorage(name, value) {
             // console.log('saving: ' + name.toString() + ' = ' + value.toString());
             try {
-                if(typeof Storage !== "undefined" && typeof localStorage === 'object') {
+                if(localStorageTest() === true) {
                     localStorage.setItem(name, value.toString());
                     return true;
                 }
             }
-            catch(error) {
-                ;
-            }
+            catch(error) {}
 
             return false;
         }
@@ -574,12 +592,92 @@
         }
 
         // --------------------------------------------------------------------
+        // natural sorting
+        // http://www.davekoelle.com/files/alphanum.js - LGPL
+
+        function naturalSortChunkify(t) {
+            var tz = [];
+            var x = 0, y = -1, n = 0, i, j;
+
+            while (i = (j = t.charAt(x++)).charCodeAt(0)) {
+                var m = (i === 46 || (i >= 48 && i <= 57));
+                if (m !== n) {
+                    tz[++y] = "";
+                    n = m;
+                }
+                tz[y] += j;
+            }
+
+            return tz;
+        }
+
+        function naturalSortCompare(a, b) {
+            var aa = naturalSortChunkify(a.toLowerCase());
+            var bb = naturalSortChunkify(b.toLowerCase());
+
+            for (var x = 0; aa[x] && bb[x]; x++) {
+                if (aa[x] !== bb[x]) {
+                    var c = Number(aa[x]), d = Number(bb[x]);
+                    if (c.toString() === aa[x] && d.toString() === bb[x])
+                        return c - d;
+                    else
+                        return (aa[x] > bb[x]) ? 1 : -1;
+                }
+            }
+
+            return aa.length - bb.length;
+        }
+
+        // --------------------------------------------------------------------
         // registry call back to render my-netdata menu
 
         var netdataRegistryCallback = function(machines_array) {
             var el = '';
             var a1 = '';
-            var found = 0;
+            var found = 0, hosted = 0;
+            var len, i, url, hostname, icon;
+
+            if(options.hosts.length > 1) {
+                // there are mirrored hosts here
+
+                el += '<li><a href="#" onClick="return false;" style="color: #666;" target="_blank">databases available on this host</a></li>';
+                a1 += '<li><a href="#" onClick="return false;"><i class="fa fa-info-circle" aria-hidden="true" style="color: #666;"></i></a></li>';
+
+                var base = document.location.origin.toString() + document.location.pathname.toString();
+                if(base.endsWith("/host/" + options.hostname + "/"))
+                    base = base.substring(0, base.length - ("/host/" + options.hostname + "/").toString().length);
+
+                if(base.endsWith("/"))
+                    base = base.substring(0, base.length - 1);
+
+                var master = options.hosts[0].hostname;
+                var sorted = options.hosts.sort(function(a, b) {
+                    if(a.hostname === master) return -1;
+                    return naturalSortCompare(a.hostname, b.hostname);
+                });
+
+                i = 0;
+                len = sorted.length;
+                while(len--) {
+                    hostname = sorted[i].hostname;
+                    if(hostname === master) {
+                        url = base + "/";
+                        icon = "home";
+                    }
+                    else {
+                        url = base + "/host/" + hostname + "/";
+                        icon = "window-restore";
+                    }
+
+                    el += '<li id="registry_server_hosted_' + len.toString() + '"><a class="registry_link" href="' + url + '" onClick="return gotoHostedModalHandler(\'' + url + '\');">' + hostname + '</a></li>';
+                    a1 += '<li id="registry_action_hosted_' + len.toString() + '"><a class="registry_link" href="' + url + '" onClick="return gotoHostedModalHandler(\'' + url + '\');"><i class="fa fa-' + icon + '" aria-hidden="true" style="color: #999;"></i></a></li>';
+                    hosted++;
+                    i++;
+                }
+
+                el += '<li role="separator" class="divider"></li>';
+                a1 += '<li role="separator" class="divider"></li>';
+            }
 
             if(machines_array === null) {
                 var ret = loadLocalStorage("registryCallback");
@@ -593,14 +691,13 @@
                 saveLocalStorage("registryCallback", JSON.stringify(machines_array));
 
                 var machines = machines_array.sort(function (a, b) {
-                    if (a.name > b.name) return -1;
-                    if (a.name < b.name) return 1;
-                    return 0;
+                    return naturalSortCompare(a.name, b.name);
                 });
 
-                var len = machines.length;
+                i = 0;
+                len = machines.length;
                 while(len--) {
-                    var u = machines[len];
+                    var u = machines[i++];
                     found++;
                     el += '<li id="registry_server_' + u.guid + '"><a class="registry_link" href="' + u.url + '" onClick="return gotoServerModalHandler(\'' + u.guid + '\');">' + u.name + '</a></li>';
                     a1 += '<li id="registry_action_' + u.guid + '"><a href="#" onclick="deleteRegistryModalHandler(\'' + u.guid + '\',\'' + u.name + '\',\'' + u.url + '\'); return false;"><i class="fa fa-trash-o" aria-hidden="true" style="color: #999;"></i></a></li>';
@@ -663,10 +760,7 @@
                             this_is_demo = true;
                 }
             }
-            catch(error) {
-                ;
-            }
-
+            catch(error) {}
             return this_is_demo;
         }
 
@@ -685,13 +779,16 @@
         }
 
         function netdataReload(url) {
-            var t = netdataURL(url);
-            // console.log('netdataReload: ' + t);
-            document.location = t;
+            document.location = netdataURL(url);
 
             // since we play with hash
             // this is needed to reload the page
             location.reload();
+        }
+
+        function gotoHostedModalHandler(url) {
+            document.location = url + urlOptions.genHash();
+            return false;
         }
 
         var gotoServerValidateRemaining = 0;
@@ -830,6 +927,8 @@
 
         var deleteRegistryUrl = null;
         function deleteRegistryModalHandler(guid, name, url) {
+            void(guid);
+
             deleteRegistryUrl = url;
             document.getElementById('deleteRegistryServerName').innerHTML = name;
             document.getElementById('deleteRegistryServerName2').innerHTML = name;
@@ -854,47 +953,30 @@
         }
 
         var options = {
-            sparklines_registry: {},
             menus: {},
             submenu_names: {},
             data: null,
             hostname: 'netdata_server', // will be overwritten by the netdata server
-            categories: new Array(),
+            version: 'unknown',
+            categories: [],
             categories_idx: {},
-            families: new Array(),
+            families: [],
             families_idx: {},
+            hosts: [],
 
             chartsPerRow: 0,
-            chartsMinWidth: 1450,
-            chartsHeight: 180,
-            sparklinesHeight: 60,
+            // chartsMinWidth: 1450,
+            chartsHeight: 180
         };
 
-        // generate a sparkline
-        // used in the documentation
-        function sparkline(chart, dimension, units) {
-            var key = chart + '.' + dimension;
-
-            if(typeof units === 'undefined')
-                units = '';
-
-            if(typeof options.sparklines_registry[key] === 'undefined')
-                options.sparklines_registry[key] = { count: 1 };
-            else
-                options.sparklines_registry[key].count++;
-
-            key = key + '.' + options.sparklines_registry[key].count;
-
-            var h = '<div data-netdata="' + chart + '" data-after="-120" data-width="25%" data-height="15px" data-chart-library="dygraph" data-dygraph-theme="sparkline" data-dimensions="' + dimension + '" data-show-value-of-' + dimension + '-at="' + key + '"></div> (<span id="' + key + '" style="display: inline-block; min-width: 50px; text-align: right;">X</span>' + units + ')';
-
-            return h;
-        }
-
         function chartsPerRow(total) {
+            void(total);
+
             if(options.chartsPerRow === 0) {
-                width = Math.floor(total / options.chartsMinWidth);
-                if(width === 0) width = 1;
-                return width;
+                return 1;
+                //var width = Math.floor(total / options.chartsMinWidth);
+                //if(width === 0) width = 1;
+                //return width;
             }
             else return options.chartsPerRow;
         }
@@ -902,15 +984,16 @@
         function prioritySort(a, b) {
             if(a.priority < b.priority) return -1;
             if(a.priority > b.priority) return 1;
-            if(a.name < b.name) return -1;
-            return 1;
+            return naturalSortCompare(a.name, b.name);
         }
 
         function sortObjectByPriority(object) {
             var idx = {};
-            var sorted = new Array();
+            var sorted = [];
 
             for(var i in object) {
+                if(!object.hasOwnProperty(i)) continue;
+
                 if(typeof idx[i] === 'undefined') {
                     idx[i] = object[i];
                     sorted.push(i);
@@ -920,8 +1003,7 @@
             sorted.sort(function(a, b) {
                 if(idx[a].priority < idx[b].priority) return -1;
                 if(idx[a].priority > idx[b].priority) return 1;
-                if(a < b) return -1;
-                return 1;
+                return naturalSortCompare(a, b);
             });
 
             return sorted;
@@ -932,10 +1014,10 @@
         // scroll to a section, without changing the browser history
 
         function scrollToId(hash) {
-            if(hash && hash != '' && document.getElementById(hash) !== null) {
+            if(hash && hash !== '' && document.getElementById(hash) !== null) {
                 var offset = $('#' + hash).offset();
                 if(typeof offset !== 'undefined')
-                    $('html, body').animate({ scrollTop: offset.top }, 0);
+                    $('html, body').animate({ scrollTop: offset.top - 30 }, 0);
             }
 
             // we must return false to prevent the default action
@@ -944,10 +1026,51 @@
 
         // ----------------------------------------------------------------------------
 
+        // user editable information
+        var customDashboard = {
+            menu: {},
+            submenu: {},
+            context: {}
+        };
+
+        // netdata standard information
         var netdataDashboard = {
+            sparklines_registry: {},
+            os: 'unknown',
+
             menu: {},
             submenu: {},
             context: {},
+
+            // generate a sparkline
+            // used in the documentation
+            sparkline: function (prefix, chart, dimension, units, suffix) {
+                if(options.data === null || typeof options.data.charts === 'undefined')
+                    return '';
+
+                if(typeof options.data.charts[chart] === 'undefined')
+                    return '';
+
+                if(typeof options.data.charts[chart].dimensions === 'undefined')
+                    return '';
+
+                if(typeof options.data.charts[chart].dimensions[dimension] === 'undefined')
+                    return '';
+
+                var key = chart + '.' + dimension;
+
+                if(typeof units === 'undefined')
+                    units = '';
+
+                if(typeof this.sparklines_registry[key] === 'undefined')
+                    this.sparklines_registry[key] = { count: 1 };
+                else
+                    this.sparklines_registry[key].count++;
+
+                key = key + '.' + this.sparklines_registry[key].count;
+
+                return prefix + '<div class="netdata-container" data-netdata="' + chart + '" data-after="-120" data-width="25%" data-height="15px" data-chart-library="dygraph" data-dygraph-theme="sparkline" data-dimensions="' + dimension + '" data-show-value-of-' + dimension + '-at="' + key + '"></div> (<span id="' + key + '" style="display: inline-block; min-width: 50px; text-align: right;">X</span>' + units + ')' + suffix;
+            },
 
             gaugeChart: function(title, width, dimensions, colors) {
                 if(typeof colors === 'undefined')
@@ -956,54 +1079,70 @@
                 if(typeof dimensions === 'undefined')
                     dimensions = '';
 
-                return '<div data-netdata="CHART_UNIQUE_ID"'
-                                        + ' data-dimensions="' + dimensions + '"'
-                                        + ' data-chart-library="gauge"'
-                                        + ' data-gauge-adjust="width"'
-                                        + ' data-title="' + title + '"'
-                                        + ' data-width="' + width + '"'
-                                        + ' data-before="0"'
-                                        + ' data-after="-CHART_DURATION"'
-                                        + ' data-points="CHART_DURATION"'
-                                        + ' data-colors="' + colors + '"'
-                                        + ' role="application"></div>';
+                return '<div class="netdata-container" data-netdata="CHART_UNIQUE_ID"'
+                            + ' data-dimensions="' + dimensions + '"'
+                            + ' data-chart-library="gauge"'
+                            + ' data-gauge-adjust="width"'
+                            + ' data-title="' + title + '"'
+                            + ' data-width="' + width + '"'
+                            + ' data-before="0"'
+                            + ' data-after="-CHART_DURATION"'
+                            + ' data-points="CHART_DURATION"'
+                            + ' data-colors="' + colors + '"'
+                            + ' role="application"></div>';
             },
 
             anyAttribute: function(obj, attr, key, def) {
-                if(typeof obj[key] !== 'undefined') {
-                    if(typeof obj[key][attr] !== 'undefined')
-                        return obj[key][attr];
+                if(typeof(obj[key]) !== 'undefined') {
+                    var x = obj[key][attr];
+
+                    if(typeof(x) === 'undefined')
+                        return def;
+
+                    if(typeof(x) === 'function') {
+                        return x(netdataDashboard.os);
+                    }
+
+                    return x;
                 }
+
                 return def;
             },
 
             menuTitle: function(chart) {
                 if(typeof chart.menu_pattern !== 'undefined') {
-                    return (netdataDashboard.anyAttribute(netdataDashboard.menu, 'title', chart.menu_pattern, chart.menu_pattern).toString()
+                    return (this.anyAttribute(this.menu, 'title', chart.menu_pattern, chart.menu_pattern).toString()
                             + '&nbsp;' + chart.type.slice(-(chart.type.length - chart.menu_pattern.length - 1)).toString()).replace(/_/g, ' ');
                 }
 
-                return (netdataDashboard.anyAttribute(netdataDashboard.menu, 'title', chart.menu, chart.menu)).toString().replace(/_/g, ' ');
+                return (this.anyAttribute(this.menu, 'title', chart.menu, chart.menu)).toString().replace(/_/g, ' ');
             },
 
             menuIcon: function(chart) {
                 if(typeof chart.menu_pattern !== 'undefined')
-                    return netdataDashboard.anyAttribute(netdataDashboard.menu, 'icon', chart.menu_pattern, '<i class="fa fa-puzzle-piece" aria-hidden="true"></i>').toString();
+                    return this.anyAttribute(this.menu, 'icon', chart.menu_pattern, '<i class="fa fa-puzzle-piece" aria-hidden="true"></i>').toString();
 
-                return netdataDashboard.anyAttribute(netdataDashboard.menu, 'icon', chart.menu, '<i class="fa fa-puzzle-piece" aria-hidden="true"></i>');
+                return this.anyAttribute(this.menu, 'icon', chart.menu, '<i class="fa fa-puzzle-piece" aria-hidden="true"></i>');
             },
 
-            menuInfo: function(menu) {
-                return netdataDashboard.anyAttribute(netdataDashboard.menu, 'info', menu, null);
+            menuInfo: function(chart) {
+                if(typeof chart.menu_pattern !== 'undefined')
+                    return this.anyAttribute(this.menu, 'info', chart.menu_pattern, null);
+
+                return this.anyAttribute(this.menu, 'info', chart.menu, null);
             },
 
-            menuHeight: function(menu, relative) {
-                return netdataDashboard.anyAttribute(netdataDashboard.menu, 'height', menu, 1.0) * relative;
+            menuHeight: function(chart) {
+                if(typeof chart.menu_pattern !== 'undefined')
+                    return this.anyAttribute(this.menu, 'height', chart.menu_pattern, 1.0);
+
+                return this.anyAttribute(this.menu, 'height', chart.menu, 1.0);
             },
 
             submenuTitle: function(menu, submenu) {
                 var key = menu + '.' + submenu;
-                var title = netdataDashboard.anyAttribute(netdataDashboard.submenu, 'title', key, submenu).toString().replace(/_/g, ' ');;
+                // console.log(key);
+                var title = this.anyAttribute(this.submenu, 'title', key, submenu).toString().replace(/_/g, ' ');
                 if(title.length > 28) {
                     var a = title.substring(0, 13);
                     var b = title.substring(title.length - 12, title.length);
@@ -1014,31 +1153,33 @@
 
             submenuInfo: function(menu, submenu) {
                 var key = menu + '.' + submenu;
-                return netdataDashboard.anyAttribute(netdataDashboard.submenu, 'info', key, null);
+                return this.anyAttribute(this.submenu, 'info', key, null);
             },
 
             submenuHeight: function(menu, submenu, relative) {
                 var key = menu + '.' + submenu;
-                return netdataDashboard.anyAttribute(netdataDashboard.submenu, 'height', key, 1.0) * relative;
+                return this.anyAttribute(this.submenu, 'height', key, 1.0) * relative;
             },
 
             contextInfo: function(id) {
-                if(typeof netdataDashboard.context[id] !== 'undefined' && typeof netdataDashboard.context[id].info !== 'undefined')
-                    return '<div class="chart-message netdata-chart-alignment" role="document">' + netdataDashboard.context[id].info + '</div>';
+                var x = this.anyAttribute(this.context, 'info', id, null);
+
+                if(x !== null)
+                    return '<div class="chart-message netdata-chart-alignment" role="document">' + x + '</div>';
                 else
                     return '';
             },
 
             contextValueRange: function(id) {
-                if(typeof netdataDashboard.context[id] !== 'undefined' && typeof netdataDashboard.context[id].valueRange !== 'undefined')
-                    return netdataDashboard.context[id].valueRange;
+                if(typeof this.context[id] !== 'undefined' && typeof this.context[id].valueRange !== 'undefined')
+                    return this.context[id].valueRange;
                 else
                     return '[null, null]';
             },
 
             contextHeight: function(id, def) {
-                if(typeof netdataDashboard.context[id] !== 'undefined' && typeof netdataDashboard.context[id].height !== 'undefined')
-                    return def * netdataDashboard.context[id].height;
+                if(typeof this.context[id] !== 'undefined' && typeof this.context[id].height !== 'undefined')
+                    return def * this.context[id].height;
                 else
                     return def;
             }
@@ -1048,14 +1189,33 @@
 
         // enrich the data structure returned by netdata
         // to reflect our menu system and content
+        // FIXME: this is a shame - we should fix charts naming (issue #807)
         function enrichChartData(chart) {
-            var tmp = chart.type.split('_')[0];
+            var parts = chart.type.split('_');
+            var tmp = parts[0];
 
             switch(tmp) {
                 case 'ap':
                 case 'net':
                 case 'disk':
+                case 'statsd':
                     chart.menu = tmp;
+                    break;
+
+                case 'apache':
+                    chart.menu = chart.type;
+                    if(parts.length > 2 && parts[1] === 'cache')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
+                    break;
+
+                case 'bind':
+                    chart.menu = chart.type;
+                    if(parts.length > 2 && parts[1] === 'rndc')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'cgroup':
@@ -1066,27 +1226,37 @@
                         chart.menu_pattern = 'cgroup';
                     break;
 
-                case 'apache':
-                case 'exim':
-                case 'dovecot':
-                case 'hddtemp':
-                case 'ipfs':
-                case 'memcached':
-                case 'mysql':
-                case 'named':
-                case 'nginx':
-                case 'nut':
-                case 'phpfpm':
-                case 'postfix':
-                case 'postgres':
-                case 'redis':
-                case 'retroshare':
-                case 'smawebbox':
-                case 'snmp':
-                case 'squid':
-                case 'tomcat':
+                case 'go':
                     chart.menu = chart.type;
-                    chart.menu_pattern = tmp;
+                    if(parts.length > 2 && parts[1] === 'expvar')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
+                    break;
+
+                case 'isc':
+                    chart.menu = chart.type;
+                    if(parts.length > 2 && parts[1] === 'dhcpd')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
+                    break;
+
+                case 'ovpn':
+                    chart.menu = chart.type;
+                    if(parts.length > 3 && parts[1] === 'status' && parts[2] === 'log')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
+                    break;
+
+                case 'smartd':
+                case 'web':
+                    chart.menu = chart.type;
+                    if(parts.length > 2 && parts[1] === 'log')
+                        chart.menu_pattern = tmp + '_' + parts[1];
+                    else if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
 
                 case 'tc':
@@ -1094,7 +1264,7 @@
 
                     // find a name for this device from fireqos info
                     // we strip '_(in|out)' or '(in|out)_'
-                    if(typeof options.submenu_names[chart.family] === 'undefined' || options.submenu_names[chart.family] === chart.family) {
+                    if(chart.context === 'tc.qos' && (typeof options.submenu_names[chart.family] === 'undefined' || options.submenu_names[chart.family] === chart.family)) {
                         var n = chart.name.split('.')[1];
                         if(n.endsWith('_in'))
                             options.submenu_names[chart.family] = n.slice(0, n.lastIndexOf('_in'));
@@ -1104,6 +1274,8 @@
                             options.submenu_names[chart.family] = n.slice(3, n.length);
                         else if(n.startsWith('out_'))
                             options.submenu_names[chart.family] = n.slice(4, n.length);
+                        else
+                            options.submenu_names[chart.family] = n;
                     }
 
                     // increase the priority of IFB devices
@@ -1115,6 +1287,8 @@
 
                 default:
                     chart.menu = chart.type;
+                    if(parts.length > 1)
+                        chart.menu_pattern = tmp;
                     break;
             }
 
@@ -1123,18 +1297,20 @@
 
         // ----------------------------------------------------------------------------
 
-        function headMain(charts, duration) {
+        function headMain(os, charts, duration) {
+            void(os);
+
             var head = '';
 
             if(typeof charts['system.swap'] !== 'undefined')
-                head += '<div style="margin-right: 10px;" data-netdata="system.swap"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.swap"'
                 + ' data-dimensions="used"'
                 + ' data-append-options="percentage"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="Used Swap"'
                 + ' data-units="%"'
                 + ' data-easypiechart-max-value="100"'
-                + ' data-width="8%"'
+                + ' data-width="9%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
@@ -1142,21 +1318,21 @@
                 + ' role="application"></div>';
 
             if(typeof charts['system.io'] !== 'undefined') {
-                head += '<div style="margin-right: 10px;" data-netdata="system.io"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.io"'
                 + ' data-dimensions="in"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="Disk Read"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' role="application"></div>';
 
-                head += '<div style="margin-right: 10px;" data-netdata="system.io"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.io"'
                 + ' data-dimensions="out"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="Disk Write"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
@@ -1164,56 +1340,56 @@
             }
 
             if(typeof charts['system.cpu'] !== 'undefined')
-                head += '<div data-netdata="system.cpu"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.cpu"'
                 + ' data-chart-library="gauge"'
                 + ' data-title="CPU"'
                 + ' data-units="%"'
                 + ' data-gauge-max-value="100"'
-                + ' data-width="18%"'
+                + ' data-width="20%"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' data-colors="' + NETDATA.colors[12] + '"'
                 + ' role="application"></div>';
 
             if(typeof charts['system.ipv4'] !== 'undefined') {
-                head += '<div style="margin-right: 10px;" data-netdata="system.ipv4"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.ipv4"'
                 + ' data-dimensions="received"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="IPv4 Inbound"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' role="application"></div>';
 
-                head += '<div style="margin-right: 10px;" data-netdata="system.ipv4"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.ipv4"'
                 + ' data-dimensions="sent"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="IPv4 Outbound"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' role="application"></div>';
             }
             else if(typeof charts['system.ipv6'] !== 'undefined') {
-                head += '<div style="margin-right: 10px;" data-netdata="system.ipv6"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.ipv6"'
                 + ' data-dimensions="received"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="IPv6 Inbound"'
                 + ' data-units="kbps"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' role="application"></div>';
 
-                head += '<div style="margin-right: 10px;" data-netdata="system.ipv6"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.ipv6"'
                 + ' data-dimensions="sent"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="IPv6 Outbound"'
                 + ' data-units="kbps"'
-                + ' data-width="10%"'
+                + ' data-width="11%"'
                 + ' data-before="0"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
@@ -1221,14 +1397,14 @@
             }
 
             if(typeof charts['system.ram'] !== 'undefined')
-                head += '<div style="margin-right: 10px;" data-netdata="system.ram"'
+                head += '<div class="netdata-container" style="margin-right: 10px;" data-netdata="system.ram"'
                 + ' data-dimensions="used|buffers|active|wired"' // active and wired are FreeBSD stats
                 + ' data-append-options="percentage"'
                 + ' data-chart-library="easypiechart"'
                 + ' data-title="Used RAM"'
                 + ' data-units="%"'
                 + ' data-easypiechart-max-value="100"'
-                + ' data-width="8%"'
+                + ' data-width="9%"'
                 + ' data-after="-' + duration.toString() + '"'
                 + ' data-points="' + duration.toString() + '"'
                 + ' data-colors="' + NETDATA.colors[7] + '"'
@@ -1244,7 +1420,7 @@
                 var hi = 0, hlen = hcharts.length;
                 while(hi < hlen) {
                     if(typeof hcharts[hi] === 'function')
-                        head += hcharts[hi](chart.id).replace('CHART_DURATION', duration.toString()).replace('CHART_UNIQUE_ID', chart.id);
+                        head += hcharts[hi](netdataDashboard.os, chart.id).replace('CHART_DURATION', duration.toString()).replace('CHART_UNIQUE_ID', chart.id);
                     else
                         head += hcharts[hi].replace('CHART_DURATION', duration.toString()).replace('CHART_UNIQUE_ID', chart.id);
                     hi++;
@@ -1261,7 +1437,7 @@
             var duration = Math.round(($(div).width() * pcent_width / 100 * data.update_every / 3) / 60) * 60;
             var html = '';
             var sidebar = '<ul class="nav dashboard-sidenav" data-spy="affix" id="sidebar_ul">';
-            var mainhead = headMain(data.charts, duration);
+            var mainhead = headMain(netdataDashboard.os, data.charts, duration);
 
             // sort the menus
             var main = sortObjectByPriority(menus);
@@ -1313,8 +1489,24 @@
                         mhead += generateHeadCharts('mainheads', chart, duration);
                         head += generateHeadCharts('heads', chart, duration);
 
+                        function chartCommonMin(family, context, units) {
+                            var x = netdataDashboard.anyAttribute(netdataDashboard.context, 'commonMin', context, undefined);
+                            if(typeof x !== 'undefined')
+                                return ' data-common-min="' + family + '/' + context + '/' + units + '"';
+                            else
+                                return '';
+                        }
+
+                        function chartCommonMax(family, context, units) {
+                            var x = netdataDashboard.anyAttribute(netdataDashboard.context, 'commonMax', context, undefined);
+                            if(typeof x !== 'undefined')
+                                return ' data-common-max="' + family + '/' + context + '/' + units + '"';
+                            else
+                                return '';
+                        }
+
                         // generate the chart
-                        chtml += netdataDashboard.contextInfo(chart.context) + '<div id="chart_' + NETDATA.name2id(chart.id) + '" data-netdata="' + chart.id + '"'
+                        chtml += netdataDashboard.contextInfo(chart.context) + '<div class="netdata-container" id="chart_' + NETDATA.name2id(chart.id) + '" data-netdata="' + chart.id + '"'
                             + ' data-width="' + pcent_width.toString() + '%"'
                             + ' data-height="' + netdataDashboard.contextHeight(chart.context, options.chartsHeight).toString() + 'px"'
                             + ' data-dygraph-valuerange="' + netdataDashboard.contextValueRange(chart.context) + '"'
@@ -1322,6 +1514,8 @@
                             + ' data-after="-' + duration.toString() + '"'
                             + ' data-id="' + NETDATA.name2id(options.hostname + '/' + chart.id) + '"'
                             + ' data-colors="' + netdataDashboard.anyAttribute(netdataDashboard.context, 'colors', chart.context, '') + '"'
+                            + chartCommonMin(chart.family, chart.context, chart.units)
+                            + chartCommonMax(chart.family, chart.context, chart.units)
                             + ' role="application"></div>';
 
                         // console.log('         \------- ' + chart.id + ' (' + chart.priority + '): ' + chart.context  + ' height: ' + menus[menu].submenus[submenu].height);
@@ -1338,7 +1532,7 @@
 
             sidebar += '<li class="" style="padding-top:15px;"><a href="https://github.com/firehol/netdata/wiki/Add-more-charts-to-netdata" target="_blank"><i class="fa fa-plus" aria-hidden="true"></i> add more charts</a></li>';
             sidebar += '<li class=""><a href="https://github.com/firehol/netdata/wiki/Add-more-alarms-to-netdata" target="_blank"><i class="fa fa-plus" aria-hidden="true"></i> add more alarms</a></li>';
-            sidebar += '<li class="" style="margin:20px;color:#666;"><small>netdata on <b>' + data.hostname.toString() + '</b>, collects every ' + ((data.update_every == 1)?'second':data.update_every.toString() + ' seconds') + ' <b>' + data.dimensions_count.toLocaleString() + '</b> metrics, presented as <b>' + data.charts_count.toLocaleString() + '</b> charts and monitored by <b>' + data.alarms_count.toLocaleString() + '</b> alarms, using ' + Math.round(data.rrd_memory_bytes / 1024 / 1024).toLocaleString() + ' MB of memory for ' + Math.round(data.history / (3600/data.update_every)).toLocaleString() + ' ' + ((data.history == (3600/data.update_every))?'hour':'hours').toString() + ' of real-time history.</small></li>';
+            sidebar += '<li class="" style="margin:20px;color:#666;"><small>netdata on <b>' + data.hostname.toString() + '</b>, collects every ' + ((data.update_every === 1)?'second':data.update_every.toString() + ' seconds') + ' <b>' + data.dimensions_count.toLocaleString() + '</b> metrics, presented as <b>' + data.charts_count.toLocaleString() + '</b> charts and monitored by <b>' + data.alarms_count.toLocaleString() + '</b> alarms, using ' + Math.round(data.rrd_memory_bytes / 1024 / 1024).toLocaleString() + ' MB of memory for ' + seconds4human(data.update_every * data.history) + ' of real-time history.<br/>&nbsp;<br/><b>netdata</b><br/>v' +  data.version.toString() +'</small></li>';
             sidebar += '</ul>';
             div.innerHTML = html;
             document.getElementById('sidebar').innerHTML = sidebar;
@@ -1348,53 +1542,71 @@
         function renderChartsAndMenu(data) {
             var menus = options.menus;
             var charts = data.charts;
+            var m, menu_key;
 
             for(var c in charts) {
-                enrichChartData(charts[c]);
+                if(!charts.hasOwnProperty(c)) continue;
+
+                var chart = charts[c];
+                enrichChartData(chart);
+                m = chart.menu;
 
                 // create the menu
-                if(typeof menus[charts[c].menu] === 'undefined') {
-                    menus[charts[c].menu] = {
-                        priority: charts[c].priority,
+                if(typeof menus[m] === 'undefined') {
+                    menus[m] = {
+                        menu_pattern: chart.menu_pattern,
+                        priority: chart.priority,
                         submenus: {},
-                        title: netdataDashboard.menuTitle(charts[c]),
-                        icon: netdataDashboard.menuIcon(charts[c]),
-                        info: netdataDashboard.menuInfo(charts[c].menu),
-                        height: netdataDashboard.menuHeight(charts[c].menu, options.chartsHeight)
+                        title: netdataDashboard.menuTitle(chart),
+                        icon: netdataDashboard.menuIcon(chart),
+                        info: netdataDashboard.menuInfo(chart),
+                        height: netdataDashboard.menuHeight(chart) * options.chartsHeight
                     };
                 }
+                else {
+                    if(typeof(menus[m].menu_pattern) === 'undefined')
+                        menus[m].menu_pattern = chart.menu_pattern;
 
-                if(charts[c].priority < menus[charts[c].menu].priority)
-                    menus[charts[c].menu].priority = charts[c].priority;
+                    if(chart.priority < menus[m].priority)
+                        menus[m].priority = chart.priority;
+                }
+
+                menu_key = (typeof(menus[m].menu_pattern) !== 'undefined')?menus[m].menu_pattern:m;
 
                 // create the submenu
-                if(typeof menus[charts[c].menu].submenus[charts[c].submenu] === 'undefined') {
-                    menus[charts[c].menu].submenus[charts[c].submenu] = {
-                        priority: charts[c].priority,
-                        charts: new Array(),
+                if(typeof menus[m].submenus[chart.submenu] === 'undefined') {
+                    menus[m].submenus[chart.submenu] = {
+                        priority: chart.priority,
+                        charts: [],
                         title: null,
-                        info: netdataDashboard.submenuInfo(charts[c].menu, charts[c].submenu),
-                        height: netdataDashboard.submenuHeight(charts[c].menu, charts[c].submenu, menus[charts[c].menu].height)
+                        info: netdataDashboard.submenuInfo(menu_key, chart.submenu),
+                        height: netdataDashboard.submenuHeight(menu_key, chart.submenu, menus[m].height)
                     };
                 }
-
-                if(charts[c].priority < menus[charts[c].menu].submenus[charts[c].submenu].priority)
-                    menus[charts[c].menu].submenus[charts[c].submenu].priority = charts[c].priority;
+                else {
+                    if (chart.priority < menus[m].submenus[chart.submenu].priority)
+                        menus[m].submenus[chart.submenu].priority = chart.priority;
+                }
 
                 // index the chart in the menu/submenu
-                menus[charts[c].menu].submenus[charts[c].submenu].charts.push(charts[c]);
+                menus[m].submenus[chart.submenu].charts.push(chart);
             }
 
             // propagate the descriptive subname given to QoS
             // to all the other submenus with the same name
-            for(var m in menus) {
+            for(m in menus) {
+                if(!menus.hasOwnProperty(m)) continue;
+
                 for(var s in menus[m].submenus) {
+                    if(!menus[m].submenus.hasOwnProperty(s)) continue;
+
                     // set the family using a name
                     if(typeof options.submenu_names[s] !== 'undefined') {
                         menus[m].submenus[s].title = s + ' (' + options.submenu_names[s] + ')';
                     }
                     else {
-                        menus[m].submenus[s].title = netdataDashboard.submenuTitle(m, s);
+                        menu_key = (typeof(menus[m].menu_pattern) !== 'undefined')?menus[m].menu_pattern:m;
+                        menus[m].submenus[s].title = netdataDashboard.submenuTitle(menu_key, s);
                     }
                 }
             }
@@ -1423,7 +1635,7 @@
         var bootstrapTableLoaded = false;
         function loadBootstrapTable(callback) {
             if(bootstrapTableLoaded === false) {
-                bootstrapTableLoaded === true;
+                bootstrapTableLoaded = true;
                 loadJs(NETDATA.serverDefault + 'lib/bootstrap-table-1.11.0.min.js', function() {
                     loadJs(NETDATA.serverDefault + 'lib/bootstrap-table-export-1.11.0.min.js', function() {
                         loadJs(NETDATA.serverDefault + 'lib/tableExport-1.6.0.min.js', callback);
@@ -1439,7 +1651,7 @@
             var footer = '<hr/><a href="https://github.com/firehol/netdata/wiki/Generating-Badges" target="_blank">netdata badges</a> refresh automatically. Their color indicates the state of the alarm: <span style="color: #e05d44"><b>&nbsp;red&nbsp;</b></span> is critical, <span style="color:#fe7d37"><b>&nbsp;orange&nbsp;</b></span> is warning, <span style="color: #4c1"><b>&nbsp;bright green&nbsp;</b></span> is ok, <span style="color: #9f9f9f"><b>&nbsp;light grey&nbsp;</b></span> is undefined (i.e. no data or no status), <span style="color: #000"><b>&nbsp;black&nbsp;</b></span> is not initialized. You can copy and paste their URLs to embed them in any web page.<br/>netdata can send notifications for these alarms. Check <a href="https://github.com/firehol/netdata/blob/master/conf.d/health_alarm_notify.conf">this configuration file</a> for more information.';
 
             NETDATA.alarms.get('all', function(data) {
-                options.alarm_families = new Array();
+                options.alarm_families = [];
 
                 alarmsCallback(data);
 
@@ -1468,74 +1680,10 @@
                     var t = new Date(timestamp * 1000);
                     var now = new Date();
 
-                    if(t.toDateString() == now.toDateString())
+                    if(t.toDateString() === now.toDateString())
                         return t.toLocaleTimeString();
 
                     return t.toLocaleDateString() + space + t.toLocaleTimeString();
-                }
-
-                function seconds4human(seconds, options) {
-                    var default_options = {
-                        now: 'now',
-                        space: '&nbsp;',
-                        negative_suffix: 'ago',
-                        hour: 'hour',
-                        hours: 'hours',
-                        minute: 'minute',
-                        minutes: 'minutes',
-                        second: 'second',
-                        seconds: 'seconds',
-                        and: 'and'
-                    };
-
-                    if(typeof options !== 'object')
-                        options = default_options;
-                    else {
-                        var x;
-                        for(x in default_options) {
-                            if(typeof options[x] !== 'string')
-                                options[x] = default_options[x];
-                        }
-                    }
-
-                    if(typeof seconds === 'string')
-                        seconds = parseInt(seconds);
-
-                    if(seconds === 0)
-                        return options.now;
-
-                    var suffix = '';
-                    if(seconds < 0) {
-                        seconds = -seconds;
-                        if(options.negative_suffix !== '') suffix = options.space + options.negative_suffix;
-                    }
-
-                    var hours = Math.floor(seconds / 3600);
-                    seconds -= (hours * 3600);
-
-                    var minutes = Math.floor(seconds / 60);
-                    seconds -= (minutes * 60);
-
-                    var txt = '';
-
-                    if(hours > 1) txt += hours.toString() + options.space + options.hours;
-                    else if(hours === 1) txt += hours.toString() + options.space + options.hour;
-
-                    if(hours > 0 && minutes > 0 && seconds == 0)
-                        txt += options.space + options.and + options.space;
-                    else if(hours > 0 && minutes > 0 && seconds > 0)
-                        txt += ',' + options.space;
-
-                    if(minutes > 1) txt += minutes.toString() + options.space + options.minutes;
-                    else if(minutes === 1) txt += minutes.toString() + options.space + options.minute;
-
-                    if((minutes > 0 || minutes > 0) && seconds > 0)
-                        txt += options.space + options.and + options.space;
-
-                    if(seconds > 1) txt += Math.floor(seconds).toString() + options.space + options.seconds;
-                    else if(seconds === 1) txt += Math.floor(seconds).toString() + options.space + options.second;
-
-                    return txt + suffix;
                 }
 
                 function alarm_lookup_explain(alarm, chart) {
@@ -1562,7 +1710,14 @@
 
                 function alarm_to_html(alarm, full) {
                     var chart = options.data.charts[alarm.chart];
-                    var has_alarm = ((typeof alarm.warn !== 'undefined' || typeof alarm.crit !== 'undefined')?true:false);
+                    if(typeof(chart) === 'undefined') {
+                        // this means the charts loaded are incomplete
+                        // probably netdata was restarted and more charts
+                        // are now available.
+                        return '';
+                    }
+
+                    var has_alarm = (typeof alarm.warn !== 'undefined' || typeof alarm.crit !== 'undefined');
 
                     var role_href = ((has_alarm === true)?('<br/>&nbsp;<br/>role: <b>' + alarm.recipient + '</b><br/>&nbsp;<br/><b><i class="fa fa-line-chart" aria-hidden="true"></i></b><small>&nbsp;&nbsp;<a href="#" onClick="NETDATA.alarms.scrollToChart(\'' + alarm.chart + '\'); $(\'#alarmsModal\').modal(\'hide\'); return false;">jump to chart</a></small>'):('&nbsp;'));
 
@@ -1572,15 +1727,18 @@
                         + ((typeof alarm.crit !== 'undefined')?('<tr><td width="10%" style="text-align:right">critical&nbsp;when</td><td><span style="font-family: monospace; color: #e05d44; font-weight: bold;">' + alarm.crit + '</span></td></tr>'):'');
 
                     if(full === true) {
-                            html += ((typeof alarm.lookup_after !== 'undefined')?('<tr><td width="10%" style="text-align:right">db&nbsp;lookup</td><td>' + alarm_lookup_explain(alarm, chart) + '</td></tr>'):'')
+                        var units = chart.units;
+                        if(units === '%') units = '&#37;';
+
+                        html += ((typeof alarm.lookup_after !== 'undefined')?('<tr><td width="10%" style="text-align:right">db&nbsp;lookup</td><td>' + alarm_lookup_explain(alarm, chart) + '</td></tr>'):'')
                             + ((typeof alarm.calc !== 'undefined')?('<tr><td width="10%" style="text-align:right">calculation</td><td><span style="font-family: monospace;">' + alarm.calc + '</span></td></tr>'):'')
-                            + ((chart.green !== null)?('<tr><td width="10%" style="text-align:right">green&nbsp;threshold</td><td><code>' + chart.green + ' ' + chart.units + '</code></td></tr>'):'')
-                            + ((chart.red !== null)?('<tr><td width="10%" style="text-align:right">red&nbsp;threshold</td><td><code>' + chart.red + ' ' + chart.units + '</code></td></tr>'):'');
+                            + ((chart.green !== null)?('<tr><td width="10%" style="text-align:right">green&nbsp;threshold</td><td><code>' + chart.green + ' ' + units + '</code></td></tr>'):'')
+                            + ((chart.red !== null)?('<tr><td width="10%" style="text-align:right">red&nbsp;threshold</td><td><code>' + chart.red + ' ' + units + '</code></td></tr>'):'');
                     }
 
                     var delay = '';
-                    if((alarm.delay_up_duration > 0 || alarm.delay_down_duration > 0) && alarm.delay_multiplier != 0 && alarm.delay_max_duration > 0) {
-                        if(alarm.delay_up_duration == alarm.delay_down_duration) {
+                    if((alarm.delay_up_duration > 0 || alarm.delay_down_duration > 0) && alarm.delay_multiplier !== 0 && alarm.delay_max_duration > 0) {
+                        if(alarm.delay_up_duration === alarm.delay_down_duration) {
                             delay += '<small><br/>hysteresis ' + seconds4human(alarm.delay_up_duration, { negative_suffix: '' });
                         }
                         else {
@@ -1592,7 +1750,7 @@
                                 delay += 'on&nbsp;recovery&nbsp;<code>' + seconds4human(alarm.delay_down_duration, { negative_suffix: '' }) + '</code>, ';
                             }
                         }
-                        if(alarm.delay_multiplier != 1.0) {
+                        if(alarm.delay_multiplier !== 1.0) {
                             delay += 'multiplied&nbsp;by&nbsp;<code>' + alarm.delay_multiplier.toString() + '</code>';
                             delay += ',&nbsp;up&nbsp;to&nbsp;<code>' + seconds4human(alarm.delay_max_duration, { negative_suffix: '' }) + '</code>';
                         }
@@ -1622,14 +1780,16 @@
 
                 // find the proper family of each alarm
                 var now = Date.now();
-                var x;
+                var x, family, alarm;
                 var count_active = 0;
                 var count_all = 0;
                 var families = {};
-                var families_sort = new Array();
+                var families_sort = [];
                 for(x in data.alarms) {
-                    var alarm = data.alarms[x];
-                    var family = alarm.family;
+                    if(!data.alarms.hasOwnProperty(x)) continue;
+
+                    alarm = data.alarms[x];
+                    family = alarm.family;
 
                     // find the chart
                     var chart = options.data.charts[alarm.chart];
@@ -1648,7 +1808,7 @@
                     if(typeof families[family] === 'undefined') {
                         families[family] = {
                             name: family,
-                            arr: new Array(),
+                            arr: [],
                             priority: chart.priority
                         };
 
@@ -1663,15 +1823,16 @@
 
                 // sort the families, like the dashboard menu does
                 var families_sorted = families_sort.sort(function (a, b) {
-                    if (a.priority > b.priority) return -1;
-                    if (a.priority < b.priority) return 1;
-                    return 0;
+                    if (a.priority < b.priority) return -1;
+                    if (a.priority > b.priority) return 1;
+                    return naturalSortCompare(a.name, b.name);
                 });
 
+                var i = 0;
                 var fc = 0;
                 var len = families_sorted.length;
                 while(len--) {
-                    var family = families_sorted[len].name;
+                    family = families_sorted[i++].name;
                     var active_family_added = false;
                     var expanded = 'true';
                     var collapsed = '';
@@ -1680,7 +1841,7 @@
                     if(fc !== 0) {
                         all += "</table></div></div></div>";
                         expanded = 'false';
-                        collapsed = 'class="collapsed"'
+                        collapsed = 'class="collapsed"';
                         cin = '';
                     }
 
@@ -1693,7 +1854,7 @@
                     var arr = families[family].arr;
                     var c = arr.length;
                     while(c--) {
-                        var alarm = arr[c];
+                        alarm = arr[c];
                         if(alarm.status === 'WARNING' || alarm.status === 'CRITICAL') {
                             if(!active_family_added) {
                                 active_family_added = true;
@@ -1726,12 +1887,13 @@
                 if(families_sorted.length > 0) alarm_family_show(0);
 
                 // register bootstrap events
-                $('#alarms_all_accordion').on('show.bs.collapse', function (d) {
+                var $accordion = $('#alarms_all_accordion');
+                $accordion.on('show.bs.collapse', function (d) {
                     var target = $(d.target);
                     var id = $(target).data('alarm-id');
                     alarm_family_show(id);
                 });
-                $('#alarms_all_accordion').on('hidden.bs.collapse', function (d) {
+                $accordion.on('hidden.bs.collapse', function (d) {
                     var target = $(d.target);
                     var id = $(target).data('alarm-id');
                     $('#alarm_all_' + id.toString()).html('');
@@ -1756,6 +1918,8 @@
                             fileName: 'netdata_alarm_log'
                         },
                         rowStyle: function(row, index) {
+                            void(index);
+
                             switch(row.status) {
                                 case 'CRITICAL' : return { classes: 'danger'  }; break;
                                 case 'WARNING'  : return { classes: 'warning' }; break;
@@ -1776,9 +1940,8 @@
                                 title: 'Event Date',
                                 valign: 'middle',
                                 titleTooltip: 'The date and time the even took place',
-                                formatter: function(value, row, index) { return timestamp4human(value, ' '); },
+                                formatter: function(value, row, index) { void(row); void(index); return timestamp4human(value, ' '); },
                                 align: 'center',
-                                valign: 'middle',
                                 switchable: false,
                                 sortable: true
                             },
@@ -1788,7 +1951,6 @@
                                 valign: 'middle',
                                 titleTooltip: 'The host that generated this event',
                                 align: 'center',
-                                valign: 'middle',
                                 visible: false,
                                 sortable: true
                             },
@@ -1796,7 +1958,7 @@
                                 field: 'unique_id',
                                 title: 'Unique ID',
                                 titleTooltip: 'The host unique ID for this event',
-                                formatter: function(value, row, index) { return alarmid4human(value); },
+                                formatter: function(value, row, index) { void(row); void(index); return alarmid4human(value); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1806,7 +1968,7 @@
                                 field: 'alarm_id',
                                 title: 'Alarm ID',
                                 titleTooltip: 'The ID of the alarm that generated this event',
-                                formatter: function(value, row, index) { return alarmid4human(value); },
+                                formatter: function(value, row, index) { void(row); void(index); return alarmid4human(value); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1816,7 +1978,7 @@
                                 field: 'alarm_event_id',
                                 title: 'Alarm Event ID',
                                 titleTooltip: 'The incremental ID of this event for the given alarm',
-                                formatter: function(value, row, index) { return alarmid4human(value); },
+                                formatter: function(value, row, index) { void(row); void(index); return alarmid4human(value); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1845,6 +2007,8 @@
                                 title: 'Alarm',
                                 titleTooltip: 'The alarm name that generated this event',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
                                     return value.toString().replace(/_/g, ' ');
                                 },
                                 align: 'center',
@@ -1853,10 +2017,29 @@
                                 sortable: true
                             },
                             {
+                                field: 'value_string',
+                                title: 'Friendly Value',
+                                titleTooltip: 'The value of the alarm, that triggered this event',
+                                align: 'right',
+                                valign: 'middle',
+                                sortable: true
+                            },
+                            {
+                                field: 'old_value_string',
+                                title: 'Friendly Old Value',
+                                titleTooltip: 'The value of the alarm, just before this event',
+                                align: 'right',
+                                valign: 'middle',
+                                visible: false,
+                                sortable: true
+                            },
+                            {
                                 field: 'old_value',
                                 title: 'Old Value',
                                 titleTooltip: 'The value of the alarm, just before this event',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
                                     return ((value !== null)?Math.round(value * 100) / 100:'NaN').toString();
                                 },
                                 align: 'center',
@@ -1869,10 +2052,13 @@
                                 title: 'Value',
                                 titleTooltip: 'The value of the alarm, that triggered this event',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
                                     return ((value !== null)?Math.round(value * 100) / 100:'NaN').toString();
                                 },
                                 align: 'right',
                                 valign: 'middle',
+                                visible: false,
                                 sortable: true
                             },
                             {
@@ -1881,6 +2067,7 @@
                                 titleTooltip: 'The units of the value of the alarm',
                                 align: 'left',
                                 valign: 'middle',
+                                visible: false,
                                 sortable: true
                             },
                             {
@@ -1905,7 +2092,11 @@
                                 field: 'duration',
                                 title: 'Last Duration',
                                 titleTooltip: 'The duration the alarm was at its previous state, just before this event',
-                                formatter: function(value, row, index) { return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' }); },
+                                formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+                                    return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' });
+                                },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1915,7 +2106,11 @@
                                 field: 'non_clear_duration',
                                 title: 'Raised Duration',
                                 titleTooltip: 'The duration the alarm was raised, just before this event',
-                                formatter: function(value, row, index) { return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' }); },
+                                formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+                                    return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' });
+                                },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1935,6 +2130,9 @@
                                 title: 'Processed Status',
                                 titleTooltip: 'True when this event is processed',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+
                                     if(value === true)
                                         return 'DONE';
                                     else
@@ -1950,6 +2148,9 @@
                                 title: 'Updated Status',
                                 titleTooltip: 'True when this event has been updated by another event',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+
                                     if(value === true)
                                         return 'UPDATED';
                                     else
@@ -1964,7 +2165,7 @@
                                 field: 'updated_by_id',
                                 title: 'Updated By ID',
                                 titleTooltip: 'The unique ID of the event that obsoleted this one',
-                                formatter: function(value, row, index) { return alarmid4human(value); },
+                                formatter: function(value, row, index) { void(row); void(index); return alarmid4human(value); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1974,7 +2175,7 @@
                                 field: 'updates_id',
                                 title: 'Updates ID',
                                 titleTooltip: 'The unique ID of the event obsoleted because of this event',
-                                formatter: function(value, row, index) { return alarmid4human(value); },
+                                formatter: function(value, row, index) { void(row); void(index); return alarmid4human(value); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -1993,7 +2194,7 @@
                                 field: 'exec_run',
                                 title: 'Script Run At',
                                 titleTooltip: 'The date and time the script has been ran',
-                                formatter: function(value, row, index) { return timestamp4human(value, ' '); },
+                                formatter: function(value, row, index) { void(row); void(index); return timestamp4human(value, ' '); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -2004,6 +2205,9 @@
                                 title: 'Script Return Value',
                                 titleTooltip: 'The return code of the script',
                                 formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+
                                     if(value === 0)
                                         return 'OK (returned 0)';
                                     else
@@ -2018,7 +2222,12 @@
                                 field: 'delay',
                                 title: 'Script Delay',
                                 titleTooltip: 'The hysteresis of the notification',
-                                formatter: function(value, row, index) { return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' }); },
+                                formatter: function(value, row, index) {
+                                    void(row);
+                                    void(index);
+
+                                    return seconds4human(value, { negative_suffix: '', space: ' ', now: 'no time' });
+                                },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -2028,7 +2237,7 @@
                                 field: 'delay_up_to_timestamp',
                                 title: 'Script Delay Run At',
                                 titleTooltip: 'The date and time the script should be run, after hysteresis',
-                                formatter: function(value, row, index) { return timestamp4human(value, ' '); },
+                                formatter: function(value, row, index) { void(row); void(index); return timestamp4human(value, ' '); },
                                 align: 'center',
                                 valign: 'middle',
                                 visible: false,
@@ -2059,9 +2268,75 @@
             });
         }
 
+        function seconds4human(seconds, options) {
+            var default_options = {
+                now: 'now',
+                space: '&nbsp;',
+                negative_suffix: 'ago',
+                hour: 'hour',
+                hours: 'hours',
+                minute: 'minute',
+                minutes: 'minutes',
+                second: 'second',
+                seconds: 'seconds',
+                and: 'and'
+            };
+
+            if(typeof options !== 'object')
+                options = default_options;
+            else {
+                var x;
+                for(x in default_options) {
+                    if(typeof options[x] !== 'string')
+                        options[x] = default_options[x];
+                }
+            }
+
+            if(typeof seconds === 'string')
+                seconds = parseInt(seconds);
+
+            if(seconds === 0)
+                return options.now;
+
+            var suffix = '';
+            if(seconds < 0) {
+                seconds = -seconds;
+                if(options.negative_suffix !== '') suffix = options.space + options.negative_suffix;
+            }
+
+            var hours = Math.floor(seconds / 3600);
+            seconds -= (hours * 3600);
+
+            var minutes = Math.floor(seconds / 60);
+            seconds -= (minutes * 60);
+
+            var txt = '';
+
+            if(hours > 1) txt += hours.toString() + options.space + options.hours;
+            else if(hours === 1) txt += hours.toString() + options.space + options.hour;
+
+            if(hours > 0 && minutes > 0 && seconds === 0)
+                txt += options.space + options.and + options.space;
+            else if(hours > 0 && minutes > 0 && seconds > 0)
+                txt += ',' + options.space;
+
+            if(minutes > 1) txt += minutes.toString() + options.space + options.minutes;
+            else if(minutes === 1) txt += minutes.toString() + options.space + options.minute;
+
+            if((minutes > 0 || minutes > 0) && seconds > 0)
+                txt += options.space + options.and + options.space;
+
+            if(seconds > 1) txt += Math.floor(seconds).toString() + options.space + options.seconds;
+            else if(seconds === 1) txt += Math.floor(seconds).toString() + options.space + options.second;
+
+            return txt + suffix;
+        }
+
         function alarmsCallback(data) {
             var count = 0;
             for(x in data.alarms) {
+                if(!data.alarms.hasOwnProperty(x)) continue;
+
                 var alarm = data.alarms[x];
                 if(alarm.status === 'WARNING' || alarm.status === 'CRITICAL')
                     count++;
@@ -2073,12 +2348,49 @@
                 document.getElementById('alarms_count_badge').innerHTML = '';
         }
 
+        function initializeDynamicDashboardWithData(data) {
+            if(data !== null) {
+                options.hostname = data.hostname;
+                options.data = data;
+                options.version = data.version;
+                netdataDashboard.os = data.os;
+
+                if(typeof data.hosts !=='undefined')
+                    options.hosts = data.hosts;
+
+                // update the dashboard hostname
+                document.getElementById('hostname').innerHTML = options.hostname;
+                document.getElementById('hostname').href = NETDATA.serverDefault;
+                document.getElementById('netdataVersion').innerHTML = options.version;
+
+                // update the dashboard title
+                document.title = options.hostname + ' netdata dashboard';
+
+                // close the splash screen
+                $("#loadOverlay").css("display","none");
+
+                // create a chart_by_name index
+                data.charts_by_name = {};
+                var charts = data.charts;
+                var x;
+                for(x in charts) {
+                    if(!charts.hasOwnProperty(x)) continue;
+
+                    var chart = charts[x];
+                    data.charts_by_name[chart.name] = chart;
+                }
+
+                // render all charts
+                renderChartsAndMenu(data);
+            }
+        }
+
         function initializeDynamicDashboard(netdata_url) {
             if(typeof netdata_url === 'undefined' || netdata_url === null)
                 netdata_url = NETDATA.serverDefault;
 
             // initialize clickable alarms
-            NETDATA.alarms.chart_div_offset = 100;
+            NETDATA.alarms.chart_div_offset = -50;
             NETDATA.alarms.chart_div_id_prefix = 'chart_';
             NETDATA.alarms.chart_div_animation_duration = 0;
 
@@ -2088,30 +2400,15 @@
                 // download all the charts the server knows
                 NETDATA.chartRegistry.downloadAll(netdata_url, function(data) {
                     if(data !== null) {
-                        options.hostname = data.hostname;
-                        options.data = data;
-
-                        // update the dashboard hostname
-                        document.getElementById('hostname').innerHTML = options.hostname;
-                        document.getElementById('hostname').href = NETDATA.serverDefault;
-
-                        // update the dashboard title
-                        document.title = options.hostname + ' netdata dashboard';
-
-                        // close the splash screen
-                        $("#loadOverlay").css("display","none");
-
-                        // create a chart_by_name index
-                        data.charts_by_name = {};
-                        var charts = data.charts;
-                        var x;
-                        for(x in charts) {
-                            var chart = charts[x];
-                            data.charts_by_name[chart.name] = chart;
+                        if(typeof data.custom_info !== 'undefined' && data.custom_info !== "") {
+                            loadJs(data.custom_info, function () {
+                                $.extend(true, netdataDashboard, customDashboard);
+                                initializeDynamicDashboardWithData(data);
+                            });
                         }
-
-                        // render all charts
-                        renderChartsAndMenu(data);
+                        else {
+                            initializeDynamicDashboardWithData(data);
+                        }
                     }
                 });
             });
@@ -2123,8 +2420,23 @@
             document.getElementById('versionCheckLog').innerHTML = msg;
         }
 
-        function getNetdataVersion(callback) {
-            versionLog('Downloading installed version info from netdata...');
+        function getNetdataCommitIdFromVersion() {
+            var s = options.version.split('-');
+
+            if(s.length !== 3) return null;
+            if(s[2][0] === 'g') {
+                var v = s[2].split('_')[0].substring(1, 8);
+                if(v.length === 7) {
+                    versionLog('Installed git commit id of netdata is ' + v);
+                    document.getElementById('netdataCommitId').innerHTML = v;
+                    return v;
+                }
+            }
+            return null;
+        }
+
+        function getNetdataCommitId(force, callback) {
+            versionLog('Downloading installed git commit id from netdata...');
 
             $.ajax({
                 url: 'version.txt',
@@ -2134,24 +2446,34 @@
             })
             .done(function(data) {
                 data = data.replace(/(\r\n|\n|\r| |\t)/gm,"");
-                if(data.length !== 40) {
-                    versionLog('Received version string is invalid.');
-                    callback(null);
+
+                var c = getNetdataCommitIdFromVersion();
+                if(c !== null && data.length === 40 && data.substring(0, 7) !== c) {
+                    versionLog('Installed files commit id and internal netdata git commit id do not match');
+                    data = c;
                 }
-                else {
-                    versionLog('Installed version of netdata is ' + data);
-                    document.getElementById('netdataVersion').innerHTML = data;
+
+                if(data.length >= 7) {
+                    versionLog('Installed git commit id of netdata is ' + data);
+                    document.getElementById('netdataCommitId').innerHTML = data.substring(0, 7);
                     callback(data);
                 }
             })
             .fail(function() {
-                versionLog('Failed to download installed version info from netdata!');
-                callback(null);
+                versionLog('Failed to download installed git commit id from netdata!');
+
+                if(force === true) {
+                    var c = getNetdataCommitIdFromVersion();
+                    if(c === null) versionLog('Cannot find the git commit id of netdata.');
+                    callback(c);
+                }
+                else
+                    callback(null);
             });
         }
 
         function getGithubLatestCommit(callback) {
-            versionLog('Downloading latest version info from github...');
+            versionLog('Downloading latest git commit id info from github...');
 
             $.ajax({
                 url: 'https://api.github.com/repos/3cky/netdata/commits',
@@ -2159,17 +2481,17 @@
                 cache: false
             })
             .done(function(data) {
-                versionLog('Latest version info from github is ' + data[0].sha);
+                versionLog('Latest git commit id from github is ' + data[0].sha);
                 callback(data[0].sha);
             })
             .fail(function() {
-                versionLog('Failed to download installed version info from github!');
+                versionLog('Failed to download installed git commit id from github!');
                 callback(null);
             });
         }
 
-        function checkForUpdate(callback) {
-            getNetdataVersion(function(sha1) {
+        function checkForUpdate(force, callback) {
+            getNetdataCommitId(force, function(sha1) {
                 if(sha1 === null) callback(null, null);
 
                 getGithubLatestCommit(function(sha2) {
@@ -2199,26 +2521,26 @@
                 }
             }
 
-            checkForUpdate(function(sha1, sha2) {
+            checkForUpdate(force, function(sha1, sha2) {
                 var save = false;
 
                 if(sha1 === null) {
                     save = false;
-                    versionLog('<p><big>Failed to get your netdata version!</big></p><p>You can always get the latest version of netdata from <a href="https://github.com/firehol/netdata" target="_blank">its github page</a>.</p>');
+                    versionLog('<p><big>Failed to get your netdata git commit id!</big></p><p>You can always get the latest netdata from <a href="https://github.com/firehol/netdata" target="_blank">its github page</a>.</p>');
                 }
                 else if(sha2 === null) {
                     save = false;
-                    versionLog('<p><big>Failed to get the latest version from github.</big></p><p>You can always get the latest version of netdata from <a href="https://github.com/firehol/netdata" target="_blank">its github page</a>.</p>');
+                    versionLog('<p><big>Failed to get the latest git commit id from github.</big></p><p>You can always get the latest netdata from <a href="https://github.com/firehol/netdata" target="_blank">its github page</a>.</p>');
                 }
                 else if(sha1 === sha2) {
                     save = true;
-                    versionLog('<p><big>You already have the latest version of netdata!</big></p><p>No update yet?<br/>Probably, we need some motivation to keep going on!</p><p>If you haven\'t already, <a href="https://github.com/firehol/netdata" target="_blank">give netdata a <b>Star</b> at its github page</a>.</p>');
+                    versionLog('<p><big>You already have the latest netdata!</big></p><p>No update yet?<br/>Probably, we need some motivation to keep going on!</p><p>If you haven\'t already, <a href="https://github.com/firehol/netdata" target="_blank">give netdata a <b>Star</b> at its github page</a>.</p>');
                 }
                 else {
                     save = true;
                     var compare = 'https://github.com/firehol/netdata/compare/' + sha1.toString() + '...' + sha2.toString();
 
-                    versionLog('<p><big><strong>New version of netdata available!</strong></big></p><p>Latest version: ' + sha2.toString() + '</p><p><a href="' + compare + '" target="_blank">Click here for the changes log</a> since your installed version, and<br/><a href="https://github.com/firehol/netdata/wiki/Updating-Netdata" target="_blank">click here for directions on updating</a> your netdata installation.</p><p>We suggest to review the changes log for new features you may be interested, or important bug fixes you may need.<br/>Keeping your netdata updated, is generally a good idea.</p>');
+                    versionLog('<p><big><strong>New version of netdata available!</strong></big></p><p>Latest commit: <b><code>' + sha2.substring(0, 7).toString() + '</code></b></p><p><a href="' + compare + '" target="_blank">Click here for the changes log</a> since your installed version, and<br/><a href="https://github.com/firehol/netdata/wiki/Updating-Netdata" target="_blank">click here for directions on updating</a> your netdata installation.</p><p>We suggest to review the changes log for new features you may be interested, or important bug fixes you may need.<br/>Keeping your netdata updated, is generally a good idea.</p>');
 
                     document.getElementById('update_badge').innerHTML = '!';
                 }
@@ -2306,17 +2628,17 @@
                             var tagName = null;
 
                             for (var i = 0, r = 0; r <= config.showChars; i++) {
-                                if (content[i] == '<' && !inTag) {
+                                if (content[i] === '<' && !inTag) {
                                     inTag = true;
 
                                     // This could be "tag" or "/tag"
                                     tagName = content.substring(i + 1, content.indexOf('>', i));
 
                                     // If its a closing tag
-                                    if (tagName[0] == '/') {
+                                    if (tagName[0] === '/') {
 
 
-                                        if (tagName != '/' + openTags[0]) {
+                                        if (tagName !== ('/' + openTags[0])) {
                                             config.errMsg = 'ERROR en HTML: the top of the stack should be the tag that closes';
                                         } else {
                                             openTags.shift(); // Pops the last tag from the open tag stack (the tag is closed in the retult HTML!)
@@ -2324,12 +2646,12 @@
 
                                     } else {
                                         // There are some nasty tags that don't have a close tag like <br/>
-                                        if (tagName.toLowerCase() != 'br') {
+                                        if (tagName.toLowerCase() !== 'br') {
                                             openTags.unshift(tagName); // Add to start the name of the tag that opens
                                         }
                                     }
                                 }
-                                if (inTag && content[i] == '>') {
+                                if (inTag && content[i] === '>') {
                                     inTag = false;
                                 }
 
@@ -2345,7 +2667,7 @@
                                         {
                                             //console.log('They were open tags');
                                             //console.log(openTags);
-                                            for (j = 0; j < openTags.length; j++) {
+                                            for (var j = 0; j < openTags.length; j++) {
                                                 //console.log('Cierro tag ' + openTags[j]);
                                                 bag += '</' + openTags[j] + '>'; // Close all tags that were opened
 
@@ -2391,8 +2713,9 @@
                 //console.log('hash = ' + urlOptions.hash);
             }
 
+            var $sidebar = $('#sidebar');
             /* activate bootstrap sidebar (affix) */
-            $('#sidebar').affix({
+            $sidebar.affix({
                 offset: {
                     top: (isdemo())?150:0,
                     bottom: 0
@@ -2402,7 +2725,7 @@
             /* fix scrolling of very long affix lists
                http://stackoverflow.com/questions/21691585/bootstrap-3-1-0-affix-too-long
              */
-            $('#sidebar').on('affixed.bs.affix', function() {
+            $sidebar.on('affixed.bs.affix', function() {
                 $(this).removeAttr('style');
             });
 
@@ -2413,11 +2736,12 @@
             });
 
             // change the URL based on the current position of the screen
-            $('#sidebar').on('activate.bs.scrollspy', function (e) {
-                // console.log(e);
+            $sidebar.on('activate.bs.scrollspy', function (e) {
+                //console.log(e);
                 var el = $(e.target);
-                //if(el.find('ul').size() == 0) {
+                //if(el.find('ul').size() === 0) {
                 var hash = el.find('a').attr('href');
+                // console.log(hash);
                 if(typeof hash === 'string' && hash.substring(0, 1) === '#' && urlOptions.hash.startsWith(hash + '_submenu_') === false) {
                     urlOptions.hash = hash;
                     //console.log(urlOptions.hash);
@@ -2440,13 +2764,13 @@
                         // console.log('switching ' + option.toString());
                         self.bootstrapToggle(NETDATA.getOption(option)?'on':'off');
                     }
-                }
+                };
 
                 var theme_sync_option = function(option) {
                     var self = $('#' + option);
 
                     self.bootstrapToggle(netdataTheme === 'slate'?'on':'off');
-                }
+                };
 
                 sync_option('eliminate_zero_dimensions');
                 sync_option('destroy_on_hide');
@@ -2504,19 +2828,21 @@
                     netdataReload();
             });
 
-            $('#updateModal').on('show.bs.modal', function() {
+            var $updateModal = $('#updateModal');
+            $updateModal.on('show.bs.modal', function() {
                 versionLog('checking, please wait...');
             });
 
-            $('#updateModal').on('shown.bs.modal', function() {
+            $updateModal.on('shown.bs.modal', function() {
                 notifyForUpdate(true);
             });
 
-            $('#alarmsModal').on('shown.bs.modal', function() {
+            var $alarmsModal = $('#alarmsModal');
+            $alarmsModal.on('shown.bs.modal', function() {
                 NETDATA.pause(alarmsUpdateModal);
             });
 
-            $('#alarmsModal').on('hidden.bs.modal', function() {
+            $alarmsModal.on('hidden.bs.modal', function() {
                 NETDATA.unpause();
                 document.getElementById('alarms_active').innerHTML =
                         document.getElementById('alarms_all').innerHTML =
@@ -2632,7 +2958,7 @@
             });
 
             NETDATA.requiredJs.push({
-                url: NETDATA.serverDefault + 'dashboard_info.js?v20170115-1',
+                url: NETDATA.serverDefault + 'dashboard_info.js?v20170530-1',
                 async: false,
                 isAlreadyLoaded: function() { return false; }
             });
@@ -2730,7 +3056,7 @@
                             <b>Hover</b> on them too!
                             </div>
                         <div class="col-md-6">
-                            <div data-netdata="system.intr" data-chart-library="dygraph" data-dygraph-theme="sparkline" data-dygraph-type="line" data-dygraph-strokewidth="3" data-dygraph-smooth="true" data-dygraph-highlightcirclesize="6" data-after="-90" data-height="60px" data-colors="#C66"></div>
+                            <div class="netdata-container" data-netdata="system.intr" data-chart-library="dygraph" data-dygraph-theme="sparkline" data-dygraph-type="line" data-dygraph-strokewidth="3" data-dygraph-smooth="true" data-dygraph-highlightcirclesize="6" data-after="-90" data-height="60px" data-colors="#C66"></div>
                             </div>
                         </div>
                     </div>
@@ -3144,7 +3470,8 @@
                     <h4 class="modal-title" id="updateModalLabel">Update Check</h4>
                 </div>
                 <div class="modal-body">
-                    Your netdata version: <b><code><span id="netdataVersion">Unknown</span></code></b>
+                    Your netdata version: <b><code><span id="netdataVersion">Unknown</span></code></b><br/>
+                    Your netdata commit: <b><code><span id="netdataCommitId">Unknown</span></code></b>
                     <br/>
                     <div style="padding: 10px;"></div>
                     <div id="versionCheckLog">Not checked yet. Please press the Check Now button.</div>
@@ -3259,4 +3586,4 @@
     </div>
 </body>
 </html>
-<script type="text/javascript" src="dashboard.js?v20170118-11"></script>
+<script type="text/javascript" src="dashboard.js?v20170605-2"></script>

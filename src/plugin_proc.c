@@ -7,7 +7,6 @@ static struct proc_module {
     int enabled;
 
     int (*func)(int update_every, usec_t dt);
-    usec_t last_run_usec;
     usec_t duration;
 
     RRDDIM *rd;
@@ -33,7 +32,7 @@ static struct proc_module {
 
         // network metrics
         { .name = "/proc/net/dev", .dim = "netdev", .func = do_proc_net_dev },
-        { .name = "/proc/net/netstat", .dim = "netstat", .func = do_proc_net_netstat },
+        { .name = "/proc/net/netstat", .dim = "netstat", .func = do_proc_net_netstat }, // this has to be before /proc/net/snmp, because there is a shared metric
         { .name = "/proc/net/snmp", .dim = "snmp", .func = do_proc_net_snmp },
         { .name = "/proc/net/snmp6", .dim = "snmp6", .func = do_proc_net_snmp6 },
         { .name = "/proc/net/softnet_stat", .dim = "softnet", .func = do_proc_net_softnet_stat },
@@ -49,6 +48,9 @@ static struct proc_module {
         // NFS metrics
         { .name = "/proc/net/rpc/nfsd", .dim = "nfsd", .func = do_proc_net_rpc_nfsd },
         { .name = "/proc/net/rpc/nfs", .dim = "nfs", .func = do_proc_net_rpc_nfs },
+
+        // ZFS metrics
+        { .name = "/proc/spl/kstat/zfs/arcstats", .dim = "zfs_arcstats", .func = do_proc_spl_kstat_zfs_arcstats },
 
         // IPC metrics
         { .name = "ipc", .dim = "ipc", .func = do_ipc },
@@ -76,20 +78,17 @@ void *proc_main(void *ptr) {
         struct proc_module *pm = &proc_modules[i];
 
         pm->enabled = config_get_boolean("plugin:proc", pm->name, 1);
-        pm->last_run_usec = 0ULL;
         pm->duration = 0ULL;
         pm->rd = NULL;
     }
 
-    usec_t step = rrd_update_every * USEC_PER_SEC;
-    for(;;) {
-        usec_t now = now_monotonic_usec();
-        usec_t next = now - (now % step) + step;
+    usec_t step = localhost->rrd_update_every * USEC_PER_SEC;
+    heartbeat_t hb;
+    heartbeat_init(&hb);
 
-        while(now < next) {
-            sleep_usec(next - now);
-            now = now_monotonic_usec();
-        }
+    for(;;) {
+        usec_t hb_dt = heartbeat_next(&hb, step);
+        usec_t duration = 0ULL;
 
         if(unlikely(netdata_exit)) break;
 
@@ -101,11 +100,9 @@ void *proc_main(void *ptr) {
 
             debug(D_PROCNETDEV_LOOP, "PROC calling %s.", pm->name);
 
-            pm->enabled = !pm->func(rrd_update_every, (pm->last_run_usec > 0)?now - pm->last_run_usec:0ULL);
-            pm->last_run_usec = now;
-
-            now = now_monotonic_usec();
-            pm->duration = now - pm->last_run_usec;
+            pm->enabled = !pm->func(localhost->rrd_update_every, hb_dt);
+            pm->duration = heartbeat_dt_usec(&hb) - duration;
+            duration += pm->duration;
 
             if(unlikely(netdata_exit)) break;
         }
@@ -118,16 +115,18 @@ void *proc_main(void *ptr) {
             static RRDSET *st = NULL;
 
             if(unlikely(!st)) {
-                st = rrdset_find_bytype("netdata", "plugin_proc_modules");
+                st = rrdset_find_bytype_localhost("netdata", "plugin_proc_modules");
 
                 if(!st) {
-                    st = rrdset_create("netdata", "plugin_proc_modules", NULL, "proc", NULL, "NetData Proc Plugin Modules Durations", "milliseconds/run", 132001, rrd_update_every, RRDSET_TYPE_STACKED);
+                    st = rrdset_create_localhost("netdata", "plugin_proc_modules", NULL, "proc", NULL
+                                                 , "NetData Proc Plugin Modules Durations", "milliseconds/run", 132001
+                                                 , localhost->rrd_update_every, RRDSET_TYPE_STACKED);
 
                     for(i = 0 ; proc_modules[i].name ;i++) {
                         struct proc_module *pm = &proc_modules[i];
                         if(unlikely(!pm->enabled)) continue;
 
-                        pm->rd = rrddim_add(st, pm->dim, NULL, 1, 1000, RRDDIM_ABSOLUTE);
+                        pm->rd = rrddim_add(st, pm->dim, NULL, 1, 1000, RRD_ALGORITHM_ABSOLUTE);
                     }
                 }
             }
@@ -163,7 +162,7 @@ int get_numa_node_count(void)
     numa_node_count = 0;
 
     char name[FILENAME_MAX + 1];
-    snprintfz(name, FILENAME_MAX, "%s%s", global_host_prefix, "/sys/devices/system/node");
+    snprintfz(name, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/sys/devices/system/node");
     char *dirname = config_get("plugin:proc:/sys/devices/system/node", "directory to monitor", name);
 
     DIR *dir = opendir(dirname);

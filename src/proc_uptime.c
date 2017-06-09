@@ -13,7 +13,7 @@ int do_proc_uptime(int update_every, usec_t dt) {
 
     if(unlikely(!ff)) {
         char filename[FILENAME_MAX + 1];
-        snprintfz(filename, FILENAME_MAX, "%s%s", global_host_prefix, "/proc/uptime");
+        snprintfz(filename, FILENAME_MAX, "%s%s", netdata_configured_host_prefix, "/proc/uptime");
 
         ff = procfile_open(config_get("plugin:proc:/proc/uptime", "filename to monitor", filename), " \t", PROCFILE_FLAG_DEFAULT);
         if(unlikely(!ff))
@@ -39,11 +39,12 @@ int do_proc_uptime(int update_every, usec_t dt) {
     // --------------------------------------------------------------------
 
     if(unlikely(!st))
-        st = rrdset_find("system.uptime");
+        st = rrdset_find_localhost("system.uptime");
 
     if(unlikely(!st)) {
-        st = rrdset_create("system", "uptime", NULL, "uptime", NULL, "System Uptime", "seconds", 1000, update_every, RRDSET_TYPE_LINE);
-        rrddim_add(st, "uptime", NULL, 1, 1000, RRDDIM_ABSOLUTE);
+        st = rrdset_create_localhost("system", "uptime", NULL, "uptime", NULL, "System Uptime", "seconds", 1000
+                                     , update_every, RRDSET_TYPE_LINE);
+        rrddim_add(st, "uptime", NULL, 1, 1000, RRD_ALGORITHM_ABSOLUTE);
     }
     else rrdset_next(st);
 

@@ -3,6 +3,13 @@
 # Author: l2isbad
 
 from base import UrlService, SocketService
+from collections import defaultdict
+from re import compile as re_compile
+
+try:
+    from urlparse import urlparse
+except ImportError:
+    from urllib.parse import urlparse
 
 # default module values (can be overridden per job in `config`)
 # update_every = 2
@@ -10,135 +17,140 @@ priority = 60000
 retries = 60
 
 # charts order (can be overridden if you want less charts, or different order)
-ORDER = ['fbin', 'fbout', 'fscur', 'fqcur', 'bbin', 'bbout', 'bscur', 'bqcur', 'health_sdown', 'health_bdown']
+ORDER = ['fbin', 'fbout', 'fscur', 'fqcur', 'bbin', 'bbout', 'bscur', 'bqcur',
+         'health_sdown', 'health_bdown', 'health_idle']
 CHARTS = {
     'fbin': {
-        'options': [None, "Kilobytes in", "kilobytes in/s", 'Frontend', 'haproxy_f.bin', 'line'],
+        'options': [None, "Kilobytes In", "KB/s", 'frontend', 'haproxy_f.bin', 'line'],
         'lines': [
         ]},
     'fbout': {
-        'options': [None, "Kilobytes out", "kilobytes out/s", 'Frontend', 'haproxy_f.bout', 'line'],
+        'options': [None, "Kilobytes Out", "KB/s", 'frontend', 'haproxy_f.bout', 'line'],
         'lines': [
         ]},
     'fscur': {
-        'options': [None, "Sessions active", "sessions", 'Frontend', 'haproxy_f.scur', 'line'],
+        'options': [None, "Sessions Active", "sessions", 'frontend', 'haproxy_f.scur', 'line'],
         'lines': [
         ]},
     'fqcur': {
-        'options': [None, "Session in queue", "sessions", 'Frontend', 'haproxy_f.qcur', 'line'],
+        'options': [None, "Session In Queue", "sessions", 'frontend', 'haproxy_f.qcur', 'line'],
         'lines': [
         ]},
     'bbin': {
-        'options': [None, "Kilobytes in", "kilobytes in/s", 'Backend', 'haproxy_b.bin', 'line'],
+        'options': [None, "Kilobytes In", "KB/s", 'backend', 'haproxy_b.bin', 'line'],
         'lines': [
         ]},
     'bbout': {
-        'options': [None, "Kilobytes out", "kilobytes out/s", 'Backend', 'haproxy_b.bout', 'line'],
+        'options': [None, "Kilobytes Out", "KB/s", 'backend', 'haproxy_b.bout', 'line'],
         'lines': [
         ]},
     'bscur': {
-        'options': [None, "Sessions active", "sessions", 'Backend', 'haproxy_b.scur', 'line'],
+        'options': [None, "Sessions Active", "sessions", 'backend', 'haproxy_b.scur', 'line'],
         'lines': [
         ]},
     'bqcur': {
-        'options': [None, "Sessions in queue", "sessions", 'Backend', 'haproxy_b.qcur', 'line'],
+        'options': [None, "Sessions In Queue", "sessions", 'backend', 'haproxy_b.qcur', 'line'],
         'lines': [
         ]},
     'health_sdown': {
-        'options': [None, "Number of servers in backend in DOWN state", "failed servers", 'Health', 'haproxy_hs.down', 'line'],
+        'options': [None, "Backend Servers In DOWN State", "failed servers", 'health',
+                    'haproxy_hs.down', 'line'],
         'lines': [
         ]},
     'health_bdown': {
-        'options': [None, "Is backend alive? 1 = DOWN", "failed backend", 'Health', 'haproxy_hb.down', 'line'],
+        'options': [None, "Is Backend Alive? 1 = DOWN", "failed backend", 'health', 'haproxy_hb.down', 'line'],
         'lines': [
+        ]},
+    'health_idle': {
+        'options': [None, "The Ratio Of Polling Time Vs Total Time", "percent", 'health', 'haproxy.idle', 'line'],
+        'lines': [
+            ['idle', None, 'absolute']
         ]}
 }
+
+METRICS = {'bin': {'algorithm': 'incremental', 'divisor': 1024},
+           'bout': {'algorithm': 'incremental', 'divisor': 1024},
+           'scur': {'algorithm': 'absolute', 'divisor': 1},
+           'qcur': {'algorithm': 'absolute', 'divisor': 1}}
+
+REGEX = dict(url=re_compile(r'idle = (?P<idle>[0-9]+)'), socket=re_compile(r'Idle_pct: (?P<idle>[0-9]+)'))
 
 
 class Service(UrlService, SocketService):
     def __init__(self, configuration=None, name=None):
-        SocketService.__init__(self, configuration=configuration, name=name)
-        self.user = self.configuration.get('user')
-        self.password = self.configuration.get('pass')
-        self.request = 'show stat\n'
-        self.poll_method = (UrlService, SocketService)
+        if 'socket' in configuration:
+            SocketService.__init__(self, configuration=configuration, name=name)
+            self.poll = SocketService
+            self.options_ = dict(regex=REGEX['socket'], stat='show stat\n', info='show info\n')
+        else:
+            UrlService.__init__(self, configuration=configuration, name=name)
+            self.poll = UrlService
+            self.options_ = dict(regex=REGEX['url'], stat=self.url, info=url_remove_params(self.url))
         self.order = ORDER
-        self.order_front = [_ for _ in ORDER if _.startswith('f')]
-        self.order_back = [_ for _ in ORDER if _.startswith('b')]
         self.definitions = CHARTS
-        self.charts = True
 
     def check(self):
-        if self.configuration.get('url'):
-            self.poll_method = self.poll_method[0]
-            url = self.configuration.get('url')
-            if not url.endswith(';csv;norefresh'):
-                self.error('Bad url(%s). Must be http://<ip.address>:<port>/<url>;csv;norefresh' % url)
-                return False
-        elif self.configuration.get('socket'):
-            self.poll_method = self.poll_method[1]
-        else:
-            self.error('No configuration is specified')
-            return False
-
-        if self.poll_method.check(self):
-            self.info('Plugin was started succesfully. We are using %s.' % self.poll_method.__name__)
+        if self.poll.check(self):
+            self.create_charts()
+            self.info('We are using %s.' % self.poll.__name__)
             return True
+        return False
 
-    def create_charts(self, front_ends, back_ends):
-        for _ in range(len(front_ends)):
-            self.definitions['fbin']['lines'].append(['_'.join(['fbin', front_ends[_]['# pxname']]), front_ends[_]['# pxname'], 'incremental', 1, 1024])
-            self.definitions['fbout']['lines'].append(['_'.join(['fbout', front_ends[_]['# pxname']]), front_ends[_]['# pxname'], 'incremental', 1, 1024])
-            self.definitions['fscur']['lines'].append(['_'.join(['fscur', front_ends[_]['# pxname']]), front_ends[_]['# pxname'], 'absolute'])
-            self.definitions['fqcur']['lines'].append(['_'.join(['fqcur', front_ends[_]['# pxname']]), front_ends[_]['# pxname'], 'absolute'])
-        
-        for _ in range(len(back_ends)):
-            self.definitions['bbin']['lines'].append(['_'.join(['bbin', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'incremental', 1, 1024])
-            self.definitions['bbout']['lines'].append(['_'.join(['bbout', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'incremental', 1, 1024])
-            self.definitions['bscur']['lines'].append(['_'.join(['bscur', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'absolute'])
-            self.definitions['bqcur']['lines'].append(['_'.join(['bqcur', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'absolute'])
-            self.definitions['health_sdown']['lines'].append(['_'.join(['hsdown', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'absolute'])
-            self.definitions['health_bdown']['lines'].append(['_'.join(['hbdown', back_ends[_]['# pxname']]), back_ends[_]['# pxname'], 'absolute'])
-                
     def _get_data(self):
+        to_netdata = dict()
+        self.request, self.url = self.options_['stat'], self.options_['stat']
+        stat_data = self._get_stat_data()
+        self.request, self.url = self.options_['info'], self.options_['info']
+        info_data = self._get_info_data(regex=self.options_['regex'])
+
+        to_netdata.update(stat_data)
+        to_netdata.update(info_data)
+        return to_netdata or None
+
+    def _get_stat_data(self):
         """
-        Format data received from http request
         :return: dict
         """
-        try:
-            raw_data = self.poll_method._get_raw_data(self).splitlines()
-        except Exception as e:
-            self.error(str(e))
-            return None
+        raw_data = self.poll._get_raw_data(self)
 
-        all_instances = [dict(zip(raw_data[0].split(','), raw_data[_].split(','))) for _ in range(1, len(raw_data))]
+        if not raw_data:
+            return dict()
 
-        back_ends = list(filter(is_backend, all_instances))
-        front_ends = list(filter(is_frontend, all_instances))
-        servers = list(filter(is_server, all_instances))
+        raw_data = raw_data.splitlines()
+        self.data = parse_data_([dict(zip(raw_data[0].split(','), raw_data[_].split(',')))
+                                 for _ in range(1, len(raw_data))])
+        if not self.data:
+            return dict()
 
-        if self.charts:
-            self.create_charts(front_ends, back_ends)
-            self.charts = False
+        stat_data = dict()
 
-        to_netdata = dict()
+        for frontend in self.data['frontend']:
+            for metric in METRICS:
+                idx = frontend['# pxname'].replace('.', '_')
+                stat_data['_'.join(['frontend', metric, idx])] = frontend.get(metric) or 0
 
-        for frontend in front_ends:
-            for _ in self.order_front:
-                to_netdata.update({'_'.join([_, frontend['# pxname']]): int(frontend[_[1:]]) if frontend.get(_[1:]) else 0})
+        for backend in self.data['backend']:
+            name, idx = backend['# pxname'], backend['# pxname'].replace('.', '_')
+            stat_data['hsdown_' + idx] = len([server for server in self.data['servers']
+                                              if server_down(server, name)])
+            stat_data['hbdown_' + idx] = 1 if backend.get('status') == 'DOWN' else 0
+            for metric in METRICS:
+                stat_data['_'.join(['backend', metric, idx])] = backend.get(metric) or 0
+        return stat_data
 
-        for backend in back_ends:
-            for _ in self.order_back:
-                to_netdata.update({'_'.join([_, backend['# pxname']]): int(backend[_[1:]]) if backend.get(_[1:]) else 0})
+    def _get_info_data(self, regex):
+        """
+        :return: dict
+        """
+        raw_data = self.poll._get_raw_data(self)
+        if not raw_data:
+            return dict()
 
-        for _ in range(len(back_ends)):
-            to_netdata.update({'_'.join(['hsdown', back_ends[_]['# pxname']]):
-                           len([server for server in servers if is_server_down(server, back_ends, _)])})
-            to_netdata.update({'_'.join(['hbdown', back_ends[_]['# pxname']]): 1 if is_backend_down(back_ends, _) else 0})
+        match = regex.search(raw_data)
+        return match.groupdict() if match else dict()
 
-        return to_netdata
-
-    def _check_raw_data(self, data):
+    @staticmethod
+    def _check_raw_data(data):
         """
         Check if all data has been gathered from socket
         :param data: str
@@ -146,32 +158,54 @@ class Service(UrlService, SocketService):
         """
         return not bool(data)
 
-def is_backend(backend):
-    try:
-        return backend['svname'] == 'BACKEND' and backend['# pxname'] != 'stats'
-    except Exception:
-        return False
+    def create_charts(self):
+        for front in self.data['frontend']:
+            name, idx = front['# pxname'], front['# pxname'].replace('.', '_')
+            for metric in METRICS:
+                self.definitions['f' + metric]['lines'].append(['_'.join(['frontend', metric, idx]),
+                                                                name, METRICS[metric]['algorithm'], 1,
+                                                                METRICS[metric]['divisor']])
+        for back in self.data['backend']:
+            name, idx = back['# pxname'], back['# pxname'].replace('.', '_')
+            for metric in METRICS:
+                self.definitions['b' + metric]['lines'].append(['_'.join(['backend', metric, idx]),
+                                                                name, METRICS[metric]['algorithm'], 1,
+                                                                METRICS[metric]['divisor']])
+            self.definitions['health_sdown']['lines'].append(['hsdown_' + idx, name, 'absolute'])
+            self.definitions['health_bdown']['lines'].append(['hbdown_' + idx, name, 'absolute'])
 
-def is_frontend(frontend):
-    try:
-        return frontend['svname'] == 'FRONTEND' and frontend['# pxname'] != 'stats'
-    except Exception:
-        return False
 
-def is_server(server):
-    try:
-        return not server['svname'].startswith(('FRONTEND', 'BACKEND'))
-    except Exception:
-        return False
+def parse_data_(data):
+    def is_backend(backend):
+        return backend.get('svname') == 'BACKEND' and backend.get('# pxname') != 'stats'
 
-def is_server_down(server, back_ends, _):
-    try:
-        return server['# pxname'] == back_ends[_]['# pxname'] and server['status'] == 'DOWN'
-    except Exception:
-        return False
+    def is_frontend(frontend):
+        return frontend.get('svname') == 'FRONTEND' and frontend.get('# pxname') != 'stats'
 
-def is_backend_down(back_ends, _):
-    try:
-        return back_ends[_]['status'] == 'DOWN'
-    except Exception:
-        return False
+    def is_server(server):
+        return not server.get('svname', '').startswith(('FRONTEND', 'BACKEND'))
+
+    if not data:
+        return None
+
+    result = defaultdict(list)
+    for elem in data:
+        if is_backend(elem):
+            result['backend'].append(elem)
+            continue
+        elif is_frontend(elem):
+            result['frontend'].append(elem)
+            continue
+        elif is_server(elem):
+            result['servers'].append(elem)
+
+    return result or None
+
+
+def server_down(server, backend_name):
+    return server.get('# pxname') == backend_name and server.get('status') == 'DOWN'
+
+
+def url_remove_params(url):
+    parsed = urlparse(url or str())
+    return '%s://%s%s' % (parsed.scheme, parsed.netloc, parsed.path)

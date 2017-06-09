@@ -58,15 +58,25 @@ typedef struct {
 #define PROCFILE_FLAG_DEFAULT             0x00000000
 #define PROCFILE_FLAG_NO_ERROR_ON_FILE_IO 0x00000001
 
+typedef enum procfile_separator {
+    PF_CHAR_IS_SEPARATOR,
+    PF_CHAR_IS_NEWLINE,
+    PF_CHAR_IS_WORD,
+    PF_CHAR_IS_QUOTE,
+    PF_CHAR_IS_OPEN,
+    PF_CHAR_IS_CLOSE
+} PF_CHAR_TYPE;
+
 typedef struct {
-    char filename[FILENAME_MAX + 1];
+    char filename[FILENAME_MAX + 1]; // not populated until profile_filename() is called
+
     uint32_t flags;
     int fd;               // the file desriptor
     size_t len;           // the bytes we have placed into data
     size_t size;          // the bytes we have allocated for data
     pflines *lines;
     pfwords *words;
-    char separators[256];
+    PF_CHAR_TYPE separators[256];
     char data[];          // allocated buffer to keep file contents
 } procfile;
 
@@ -88,6 +98,8 @@ extern void procfile_print(procfile *ff);
 
 extern void procfile_set_quotes(procfile *ff, const char *quotes);
 extern void procfile_set_open_close(procfile *ff, const char *open, const char *close);
+
+extern char *procfile_filename(procfile *ff);
 
 // ----------------------------------------------------------------------------
 

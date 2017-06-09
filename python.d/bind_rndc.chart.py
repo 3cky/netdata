@@ -4,7 +4,7 @@
 
 from base import SimpleService
 from re import compile, findall
-from os.path import getsize, isfile, split
+from os.path import getsize, split
 from os import access as is_accessible, R_OK
 from subprocess import Popen
 
@@ -12,7 +12,6 @@ priority = 60000
 retries = 60
 update_every = 30
 
-DIRECTORIES = ['/bin/', '/usr/bin/', '/sbin/', '/usr/sbin/']
 NMS = ['requests', 'responses', 'success', 'auth_answer', 'nonauth_answer', 'nxrrset', 'failure',
        'nxdomain', 'recursion', 'duplicate', 'rejections']
 QUERIES = ['RESERVED0', 'A', 'NS', 'CNAME', 'SOA', 'PTR', 'MX', 'TXT', 'X25', 'AAAA', 'SRV', 'NAPTR',
@@ -29,16 +28,12 @@ class Service(SimpleService):
         # 'Cache DB RRsets', 'Socket I/O Statistics']
         self.options = ['Name Server Statistics', 'Incoming Queries', 'Outgoing Queries']
         self.regex_options = [r'(%s(?= \+\+)) \+\+([^\+]+)' % option for option in self.options]
-        try:
-            self.rndc = [''.join([directory, 'rndc']) for directory in DIRECTORIES
-                         if isfile(''.join([directory, 'rndc']))][0]
-        except IndexError:
-            self.rndc = False
+        self.rndc = self.find_binary('rndc')
 
     def check(self):
         # We cant start without 'rndc' command
         if not self.rndc:
-            self.error('Command "rndc" not found')
+            self.error('Can\'t locate \'rndc\' binary or binary is not executable by netdata')
             return False
 
         # We cant start if stats file is not exist or not readable by netdata user
@@ -55,15 +50,15 @@ class Service(SimpleService):
         if not run_rndc.returncode:
             # 'rndc' was found, stats file is exist and readable and we can run 'rndc stats'. Lets go!
             self.create_charts()
-            
+
             # BIND APPEND dump on every run 'rndc stats'
             # that is why stats file size can be VERY large if update_interval too small
             dump_size_24hr = round(86400 / self.update_every * (int(size_after) - int(size_before)) / 1048576, 3)
-            
+
             # If update_every too small we should WARN user
             if self.update_every < 30:
                 self.info('Update_every %s is NOT recommended for use. Increase the value to > 30' % self.update_every)
-            
+
             self.info('With current update_interval it will be + %s MB every 24hr. '
                       'Don\'t forget to create logrotate conf file for %s' % (dump_size_24hr, self.named_stats_path))
 
@@ -82,12 +77,11 @@ class Service(SimpleService):
                        named.stats file size
                       )
         """
-
         try:
             current_size = getsize(self.named_stats_path)
         except OSError:
             return None, None
-        
+
         run_rndc = Popen([self.rndc, 'stats'], shell=False)
         run_rndc.wait()
 
@@ -115,23 +109,23 @@ class Service(SimpleService):
             return None
 
         rndc_stats = dict()
-        
+
         # Result: dict.
         # topic = Cache DB RRsets; body = A 178303 NS 86790 ... ; desc = A; value = 178303
         # {'Cache DB RRsets': [('A', 178303), ('NS', 286790), ...],
         # {Incoming Queries': [('RESERVED0', 8), ('A', 4557317680), ...],
         # ......
         for regex in self.regex_options:
-            rndc_stats.update({topic: [(desc, int(value)) for value, desc in self.regex_values.findall(body)]
-                               for topic, body in findall(regex, raw_data)})
-        
+            rndc_stats.update(dict([(topic, [(desc, int(value)) for value, desc in self.regex_values.findall(body)])
+                               for topic, body in findall(regex, raw_data)]))
+
         nms = dict(rndc_stats.get('Name Server Statistics', []))
 
-        inc_queries = {'i' + k: 0 for k in QUERIES}
-        inc_queries.update({'i' + k: v for k, v in rndc_stats.get('Incoming Queries', [])})
-        out_queries = {'o' + k: 0 for k in QUERIES}
-        out_queries.update({'o' + k: v for k, v in rndc_stats.get('Outgoing Queries', [])})
-        
+        inc_queries = dict([('i' + k, 0) for k in QUERIES])
+        inc_queries.update(dict([('i' + k, v) for k, v in rndc_stats.get('Incoming Queries', [])]))
+        out_queries = dict([('o' + k, 0) for k in QUERIES])
+        out_queries.update(dict([('o' + k, v) for k, v in rndc_stats.get('Outgoing Queries', [])]))
+
         to_netdata = dict()
         to_netdata['requests'] = sum([v for k, v in nms.items() if 'request' in k and 'received' in k])
         to_netdata['responses'] = sum([v for k, v in nms.items() if 'responses' in k and 'sent' in k])
@@ -145,7 +139,7 @@ class Service(SimpleService):
         to_netdata['duplicate'] = nms.get('duplicate queries received', 0)
         to_netdata['rejections'] = nms.get('recursive queries rejected', 0)
         to_netdata['stats_size'] = size
-        
+
         to_netdata.update(inc_queries)
         to_netdata.update(out_queries)
         return to_netdata
@@ -154,20 +148,20 @@ class Service(SimpleService):
         self.order = ['stats_size', 'bind_stats', 'incoming_q', 'outgoing_q']
         self.definitions = {
             'bind_stats': {
-                'options': [None, 'Name Server Statistics', 'stats', 'Name Server Statistics', 'bind_rndc.stats', 'line'],
+                'options': [None, 'Name Server Statistics', 'stats', 'name server statistics', 'bind_rndc.stats', 'line'],
                 'lines': [
                          ]},
             'incoming_q': {
-                'options': [None, 'Incoming queries', 'queries','Incoming queries', 'bind_rndc.incq', 'line'],
+                'options': [None, 'Incoming queries', 'queries','incoming queries', 'bind_rndc.incq', 'line'],
                 'lines': [
                         ]},
             'outgoing_q': {
-                'options': [None, 'Outgoing queries', 'queries','Outgoing queries', 'bind_rndc.outq', 'line'],
+                'options': [None, 'Outgoing queries', 'queries','outgoing queries', 'bind_rndc.outq', 'line'],
                 'lines': [
                         ]},
             'stats_size': {
                 'options': [None, '%s file size' % split(self.named_stats_path)[1].capitalize(), 'megabytes',
-                            '%s size' % split(self.named_stats_path)[1].capitalize(), 'bind_rndc.size', 'line'],
+                            '%s size' % split(self.named_stats_path)[1], 'bind_rndc.size', 'line'],
                 'lines': [
                          ["stats_size", None, "absolute", 1, 1048576]
                         ]}

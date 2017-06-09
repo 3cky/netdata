@@ -102,8 +102,10 @@ get_changelog_version() {
 get_configure_ac_version() {
   get_staged_file configure.ac
   local v=`sed -n \
-         -e '/define(\[VERSION_\(MINOR\|FIX\)/s/.*\[\([^[]*\)\].*/.\1/p' \
-         -e '/define(\[VERSION_\(MAJOR\|SUFFIX\)/s/.*\[\([^[]*\)\].*/\1/p' \
+         -e '/define(\[VERSION_MAJOR/s/.*\[\([^[]*\)\].*/\1/p' \
+         -e '/define(\[VERSION_MINOR/s/.*\[\([^[]*\)\].*/.\1/p' \
+         -e '/define(\[VERSION_FIX/s/.*\[\([^[]*\)\].*/.\1/p' \
+         -e '/define(\[VERSION_SUFFIX/s/.*\[\([^[]*\)\].*/\1/p' \
          $MYTMP/files/configure.ac | tr -d '\n'`
   if [ ! "$v" ]; then v="No version in configure.ac!"; fi
   echo "$v"
@@ -126,7 +128,7 @@ get_configure_ac_rpmrel() {
 get_spec_version() {
   get_staged_file -o "$1".spec.in
   test -f $MYTMP/files/"$1".spec.in || return 0 # Spec file is optional
-  sed -n -e '1,/^%changelog/d' -e '/^*/{s/.*- \([0-9].*\)/\1/p;q}' "$1".spec.in
+  sed -n -e '1,/^%changelog/d' -e '/^*/{' -e 's/.*- \([0-9].*\)/\1/p' -e q -e '}' "$1".spec.in
 }
 
 splitver() {

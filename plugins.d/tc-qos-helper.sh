@@ -12,11 +12,57 @@
 export PATH="${PATH}:/sbin:/usr/sbin:/usr/local/sbin"
 export LC_ALL=C
 
+
+# -----------------------------------------------------------------------------
+# find /var/run/fireqos
+
+# the default
+fireqos_run_dir="/var/run/fireqos"
+
+function realdir {
+    local r="$1"
+    local t=$(readlink "$r")
+
+    while [ "$t" ]
+        do
+        r=$(cd $(dirname "$r") && cd $(dirname "$t") && pwd -P)/$(basename "$t")
+        t=$(readlink "$r")
+    done
+
+    dirname "$r"
+}
+
+if [ ! -d "${fireqos_run_dir}" ]
+    then
+
+    # the fireqos executable - we will use it to find its config
+    fireqos="$(which fireqos 2>/dev/null || command -v fireqos 2>/dev/null)"
+
+    if [ ! -z "${fireqos}" ]
+        then
+
+        fireqos_exec_dir="$(realdir ${fireqos})"
+
+        if [ ! -z "${fireqos_exec_dir}" -a "${fireqos_exec_dir}" != "." -a -f "${fireqos_exec_dir}/install.config" ]
+            then
+
+            LOCALSTATEDIR=
+            source "${fireqos_exec_dir}/install.config"
+
+            if [ -d "${LOCALSTATEDIR}/run/fireqos" ]
+                then
+                fireqos_run_dir="${LOCALSTATEDIR}/run/fireqos"
+            fi
+        fi
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# logging functions
+
 PROGRAM_FILE="$0"
 PROGRAM_NAME="$(basename $0)"
 PROGRAM_NAME="${PROGRAM_NAME/.plugin}"
-
-# -----------------------------------------------------------------------------
 
 logdate() {
     date "+%Y-%m-%d %H:%M:%S"
@@ -52,6 +98,7 @@ debug() {
     [ $debug -eq 1 ] && log DEBUG "${@}"
 }
 
+
 # -----------------------------------------------------------------------------
 
 plugins_dir="${NETDATA_PLUGINS_DIR}"
@@ -59,23 +106,52 @@ plugins_dir="${NETDATA_PLUGINS_DIR}"
 
 config_dir=${NETDATA_CONFIG_DIR-/etc/netdata}
 tc="$(which tc 2>/dev/null || command -v tc 2>/dev/null)"
-fireqos_run_dir="/var/run/fireqos"
+
+
+# -----------------------------------------------------------------------------
+# user configuration
+
+# time in seconds to refresh QoS class/qdisc names
 qos_get_class_names_every=120
+
+# time in seconds to exit - netdata will restart the script
 qos_exit_every=3600
 
+# what to use? classes or qdiscs?
+tc_show="qdisc" # can also be "class"
+
+
+# -----------------------------------------------------------------------------
 # check if we have a valid number for interval
+
 t=${1}
 update_every=$((t))
 [ $((update_every)) -lt 1 ] && update_every=${NETDATA_UPDATE_EVERY}
 [ $((update_every)) -lt 1 ] && update_every=1
 
+
+# -----------------------------------------------------------------------------
 # allow the user to override our defaults
+
 if [ -f "${config_dir}/tc-qos-helper.conf" ]
     then
     source "${config_dir}/tc-qos-helper.conf"
 fi
 
+case "${tc_show}" in
+    qdisc|class)
+        ;;
+
+    *)
+        error "tc_show variable can be either 'qdisc' or 'class' but is set to '${tc_show}'. Assuming it is 'qdisc'."
+        tc_show="qdisc"
+        ;;
+esac
+
+
+# -----------------------------------------------------------------------------
 # default sleep function
+
 LOOPSLEEPMS_LASTWORK=0
 loopsleepms() {
     sleep $1
@@ -85,6 +161,10 @@ loopsleepms() {
 # with a high resolution timer function for precise looping.
 . "${plugins_dir}/loopsleepms.sh.inc"
 
+
+# -----------------------------------------------------------------------------
+# final checks we can run
+
 if [ -z "${tc}" -o ! -x "${tc}" ]
     then
     fatal "cannot find command 'tc' in this system."
@@ -93,11 +173,20 @@ fi
 tc_devices=
 fix_names=
 
+# -----------------------------------------------------------------------------
+
 setclassname() {
-    echo "SETCLASSNAME $3 $2"
+    if [ "${tc_show}" = "qdisc" ]
+        then
+        echo "SETCLASSNAME $4 $2"
+    else
+        echo "SETCLASSNAME $3 $2"
+    fi
 }
 
 show_tc_cls() {
+    [ "${tc_show}" = "qdisc" ] && return 1
+
     local x="${1}"
 
     if [ -f /etc/iproute2/tc_cls ]
@@ -110,7 +199,6 @@ show_tc_cls() {
         done </etc/iproute2/tc_cls
         return 0
     fi
-
     return 1
 }
 
@@ -144,7 +232,7 @@ show_tc() {
     echo "BEGIN ${x}"
 
     # netdata can parse the output of tc
-    ${tc} -s class show dev ${x}
+    ${tc} -s ${tc_show} show dev ${x}
 
     # check FireQOS names for classes
     if [ ! -z "${fix_names}" ]

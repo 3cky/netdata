@@ -18,12 +18,6 @@ class OsgiMonitorService(UrlService):
     def __init__(self, configuration=None, name=None):
         UrlService.__init__(self, configuration=configuration, name=name)
 
-    def check(self):
-        if UrlService.poll_method.check(self):
-            self.info('Plugin was started successfully.')
-            return True
-        return False
-
     def _get_mon_data(self, raw):
         """
         Get monitorables data from data received from http request to Monitorable Service

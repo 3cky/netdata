@@ -17,8 +17,12 @@ retries = 60
 class OsgiMonitorService(UrlService):
     def __init__(self, configuration=None, name=None):
         UrlService.__init__(self, configuration=configuration, name=name)
-        if len(self.url) == 0:
-            self.url = "http://localhost/system/monitor?json&vars"
+
+    def check(self):
+        if UrlService.poll_method.check(self):
+            self.info('Plugin was started successfully.')
+            return True
+        return False
 
     def _get_mon_data(self, raw):
         """
@@ -58,9 +62,9 @@ class OsgiMonitorService(UrlService):
         """
         self.chart_name = self.name
 
-        try:
-            raw = self._get_raw_data()
-        except:
+        raw = self._get_raw_data()
+
+        if not raw:
             return None
 
         return self._get_mon_data(raw)

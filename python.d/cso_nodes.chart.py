@@ -77,7 +77,8 @@ CHARTS = {
         'lines': [
             ['game.service.authz.active', 'active'],
             ['game.service.authz.total', 'total'],
-            ['game.service.authz.active.m_5', 'durak']
+            ['game.service.authz.active.m_5', 'durak'],
+            ['game.service.authz.active.m_11', 'poker']
         ]},
     'game.pool': {
         'options': [None, 'Threads', 'threads', 'Game (pool)', 'cso.game.pool', 'area'],

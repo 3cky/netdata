@@ -1,5 +1,5 @@
 import json
-from osgi_monitor import OsgiMonitorService
+from third_party.osgi_monitor import OsgiMonitorService
 
 # default module values (can be overridden per job in `config`)
 update_every = 15

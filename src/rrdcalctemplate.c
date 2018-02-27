@@ -5,14 +5,15 @@
 // RRDCALCTEMPLATE management
 
 void rrdcalctemplate_link_matching(RRDSET *st) {
+    RRDHOST *host = st->rrdhost;
     RRDCALCTEMPLATE *rt;
 
-    for(rt = st->rrdhost->templates; rt ; rt = rt->next) {
+    for(rt = host->templates; rt ; rt = rt->next) {
         if(rt->hash_context == st->hash_context && !strcmp(rt->context, st->context)
            && (!rt->family_pattern || simple_pattern_matches(rt->family_pattern, st->family))) {
-            RRDCALC *rc = rrdcalc_create(st->rrdhost, rt, st->id);
+            RRDCALC *rc = rrdcalc_create(host, rt, st->id);
             if(unlikely(!rc))
-                info("Health tried to create alarm from template '%s' on chart '%s' of host '%s', but it failed", rt->name, st->id, st->rrdhost->hostname);
+                info("Health tried to create alarm from template '%s' on chart '%s' of host '%s', but it failed", rt->name, st->id, host->hostname);
 
 #ifdef NETDATA_INTERNAL_CHECKS
             else if(rc->rrdset != st)
@@ -22,7 +23,28 @@ void rrdcalctemplate_link_matching(RRDSET *st) {
     }
 }
 
-inline void rrdcalctemplate_free(RRDHOST *host, RRDCALCTEMPLATE *rt) {
+inline void rrdcalctemplate_free(RRDCALCTEMPLATE *rt) {
+    if(unlikely(!rt)) return;
+
+    expression_free(rt->calculation);
+    expression_free(rt->warning);
+    expression_free(rt->critical);
+
+    freez(rt->family_match);
+    simple_pattern_free(rt->family_pattern);
+
+    freez(rt->name);
+    freez(rt->exec);
+    freez(rt->recipient);
+    freez(rt->context);
+    freez(rt->source);
+    freez(rt->units);
+    freez(rt->info);
+    freez(rt->dimensions);
+    freez(rt);
+}
+
+inline void rrdcalctemplate_unlink_and_free(RRDHOST *host, RRDCALCTEMPLATE *rt) {
     if(unlikely(!rt)) return;
 
     debug(D_HEALTH, "Health removing template '%s' of host '%s'", rt->name, host->hostname);
@@ -41,22 +63,7 @@ inline void rrdcalctemplate_free(RRDHOST *host, RRDCALCTEMPLATE *rt) {
             error("Cannot find RRDCALCTEMPLATE '%s' linked in host '%s'", rt->name, host->hostname);
     }
 
-    expression_free(rt->calculation);
-    expression_free(rt->warning);
-    expression_free(rt->critical);
-
-    freez(rt->family_match);
-    simple_pattern_free(rt->family_pattern);
-
-    freez(rt->name);
-    freez(rt->exec);
-    freez(rt->recipient);
-    freez(rt->context);
-    freez(rt->source);
-    freez(rt->units);
-    freez(rt->info);
-    freez(rt->dimensions);
-    freez(rt);
+    rrdcalctemplate_free(rt);
 }
 
 

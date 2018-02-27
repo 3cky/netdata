@@ -24,7 +24,10 @@ run ./configure \
 run sed -i -e "s/curl_LDFLAGS =/curl_LDFLAGS = -all-static/" src/Makefile
 
 run make clean
-run make -j${PROCESSORS}
+run make -j${SYSTEM_CPUS}
 run make install
 
-run strip ${NETDATA_INSTALL_PATH}/bin/curl
+if [ ${NETDATA_BUILD_WITH_DEBUG} -eq 0 ]
+then
+    run strip ${NETDATA_INSTALL_PATH}/bin/curl
+fi

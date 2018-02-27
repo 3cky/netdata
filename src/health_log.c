@@ -77,7 +77,7 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
                         "\t%08x\t%08x\t%08x"
                         "\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s"
                         "\t%d\t%d\t%d\t%d"
-                        "\t%Lf\t%Lf"
+                        "\t" CALCULATED_NUMBER_FORMAT_AUTO "\t" CALCULATED_NUMBER_FORMAT_AUTO
                         "\n"
                             , (ae->flags & HEALTH_ENTRY_FLAG_SAVED)?'U':'A'
                             , host->hostname
@@ -109,8 +109,8 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
                             , ae->old_status
                             , ae->delay
 
-                            , (long double)ae->new_value
-                            , (long double)ae->old_value
+                            , ae->new_value
+                            , ae->old_value
         ) < 0))
             error("HEALTH [%s]: failed to save alarm log entry to '%s'. Health data may be lost in case of abnormal restart.", host->hostname, host->health_log_filename);
         else {
@@ -121,8 +121,6 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
 }
 
 inline ssize_t health_alarm_log_read(RRDHOST *host, FILE *fp, const char *filename) {
-    static uint32_t max_unique_id = 0, max_alarm_id = 0;
-
     errno = 0;
 
     char *s, *buf = mallocz(65536 + 1);
@@ -271,7 +269,7 @@ inline ssize_t health_alarm_log_read(RRDHOST *host, FILE *fp, const char *filena
             ae->new_value   = str2l(pointers[25]);
             ae->old_value   = str2l(pointers[26]);
 
-            static char value_string[100 + 1];
+            char value_string[100 + 1];
             freez(ae->old_value_string);
             freez(ae->new_value_string);
             ae->old_value_string = strdupz(format_value_and_unit(value_string, 100, ae->old_value, ae->units, -1));
@@ -285,11 +283,11 @@ inline ssize_t health_alarm_log_read(RRDHOST *host, FILE *fp, const char *filena
             }
             else updated++;
 
-            if(unlikely(ae->unique_id > max_unique_id))
-                max_unique_id = ae->unique_id;
+            if(unlikely(ae->unique_id > host->health_max_unique_id))
+                host->health_max_unique_id = ae->unique_id;
 
-            if(unlikely(ae->alarm_id >= max_alarm_id))
-                max_alarm_id = ae->alarm_id;
+            if(unlikely(ae->alarm_id >= host->health_max_alarm_id))
+                host->health_max_alarm_id = ae->alarm_id;
         }
         else {
             error("HEALTH [%s]: line %zu of file '%s' is invalid (unrecognized entry type '%s').", host->hostname, line, filename, pointers[0]);
@@ -301,11 +299,11 @@ inline ssize_t health_alarm_log_read(RRDHOST *host, FILE *fp, const char *filena
 
     freez(buf);
 
-    if(!max_unique_id) max_unique_id = (uint32_t)now_realtime_sec();
-    if(!max_alarm_id)  max_alarm_id  = (uint32_t)now_realtime_sec();
+    if(!host->health_max_unique_id) host->health_max_unique_id = (uint32_t)now_realtime_sec();
+    if(!host->health_max_alarm_id)  host->health_max_alarm_id  = (uint32_t)now_realtime_sec();
 
-    host->health_log.next_log_id = max_unique_id + 1;
-    host->health_log.next_alarm_id = max_alarm_id + 1;
+    host->health_log.next_log_id = host->health_max_unique_id + 1;
+    host->health_log.next_alarm_id = host->health_max_alarm_id + 1;
 
     debug(D_HEALTH, "HEALTH [%s]: loaded file '%s' with %zd new alarm entries, updated %zd alarms, errors %zd entries, duplicate %zd", host->hostname, filename, loaded, updated, errored, duplicate);
     return loaded;
@@ -353,8 +351,8 @@ inline void health_alarm_log(
         time_t duration,
         calculated_number old_value,
         calculated_number new_value,
-        int old_status,
-        int new_status,
+        RRDCALC_STATUS old_status,
+        RRDCALC_STATUS new_status,
         const char *source,
         const char *units,
         const char *info,
@@ -388,7 +386,7 @@ inline void health_alarm_log(
     ae->old_value = old_value;
     ae->new_value = new_value;
 
-    static char value_string[100 + 1];
+    char value_string[100 + 1];
     ae->old_value_string = strdupz(format_value_and_unit(value_string, 100, ae->old_value, ae->units, -1));
     ae->new_value_string = strdupz(format_value_and_unit(value_string, 100, ae->new_value, ae->units, -1));
 

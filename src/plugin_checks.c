@@ -1,39 +1,79 @@
 #include "common.h"
 
-void *checks_main(void *ptr) {
+#ifdef NETDATA_INTERNAL_CHECKS
+
+static void checks_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("CHECKS thread created with task id %d", gettid());
+    info("cleaning up...");
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("Cannot set pthread cancel type to DEFERRED.");
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("Cannot set pthread cancel state to ENABLE.");
+void *checks_main(void *ptr) {
+    netdata_thread_cleanup_push(checks_main_cleanup, ptr);
 
     usec_t usec = 0, susec = localhost->rrd_update_every * USEC_PER_SEC, loop_usec = 0, total_susec = 0;
     struct timeval now, last, loop;
 
     RRDSET *check1, *check2, *check3, *apps_cpu = NULL;
 
-    check1 = rrdset_create_localhost("netdata", "check1", NULL, "netdata", NULL, "Caller gives microseconds"
-                                     , "a million !", 99999, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+    check1 = rrdset_create_localhost(
+            "netdata"
+            , "check1"
+            , NULL
+            , "netdata"
+            , NULL
+            , "Caller gives microseconds"
+            , "a million !"
+            , "netdata"
+            , "checks"
+            , 99999
+            , localhost->rrd_update_every
+            , RRDSET_TYPE_LINE
+    );
+
     rrddim_add(check1, "absolute", NULL, -1, 1, RRD_ALGORITHM_ABSOLUTE);
     rrddim_add(check1, "incremental", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
 
-    check2 = rrdset_create_localhost("netdata", "check2", NULL, "netdata", NULL, "Netdata calcs microseconds"
-                                     , "a million !", 99999, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+    check2 = rrdset_create_localhost(
+            "netdata"
+            , "check2"
+            , NULL
+            , "netdata"
+            , NULL
+            , "Netdata calcs microseconds"
+            , "a million !"
+            , "netdata"
+            , "checks"
+            , 99999
+            , localhost->rrd_update_every
+            , RRDSET_TYPE_LINE
+    );
     rrddim_add(check2, "absolute", NULL, -1, 1, RRD_ALGORITHM_ABSOLUTE);
     rrddim_add(check2, "incremental", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
 
-    check3 = rrdset_create_localhost("netdata", "checkdt", NULL, "netdata", NULL, "Clock difference"
-                                     , "microseconds diff", 99999, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+    check3 = rrdset_create_localhost(
+            "netdata"
+            , "checkdt"
+            , NULL
+            , "netdata"
+            , NULL
+            , "Clock difference"
+            , "microseconds diff"
+            , "netdata"
+            , "checks"
+            , 99999
+            , localhost->rrd_update_every
+            , RRDSET_TYPE_LINE
+    );
     rrddim_add(check3, "caller", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
     rrddim_add(check3, "netdata", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
     rrddim_add(check3, "apps.plugin", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
 
     now_realtime_timeval(&last);
-    while(1) {
+    while(!netdata_exit) {
         usleep(susec);
 
         // find the time to sleep in order to wait exactly update_every seconds
@@ -80,10 +120,8 @@ void *checks_main(void *ptr) {
         rrdset_done(check3);
     }
 
-    info("CHECKS thread exiting");
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }
 
+#endif // NETDATA_INTERNAL_CHECKS

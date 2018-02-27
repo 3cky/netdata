@@ -37,9 +37,9 @@ static size_t mount_points_added = 0, mount_points_found = 0;
 
 static void mount_point_free(struct mount_point *m) {
     if (likely(m->st_space))
-        rrdset_flag_set(m->st_space,  RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(m->st_space);
     if (likely(m->st_inodes))
-        rrdset_flag_set(m->st_inodes, RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(m->st_inodes);
 
     mount_points_added--;
     freez(m->name);
@@ -122,7 +122,7 @@ static struct mount_point *get_mount_point(const char *name) {
 int do_getmntinfo(int update_every, usec_t dt) {
     (void)dt;
 
-#define DELAULT_EXLUDED_PATHS "/proc/*"
+#define DELAULT_EXCLUDED_PATHS "/proc/*"
 // taken from gnulib/mountlist.c and shortened to FreeBSD related fstypes
 #define DEFAULT_EXCLUDED_FILESYSTEMS "autofs procfs subfs devfs none"
 #define CONFIG_SECTION_GETMNTINFO "plugin:freebsd:getmntinfo"
@@ -142,14 +142,16 @@ int do_getmntinfo(int update_every, usec_t dt) {
 
         excluded_mountpoints = simple_pattern_create(
                 config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on paths",
-                           DELAULT_EXLUDED_PATHS),
-                SIMPLE_PATTERN_EXACT
+                           DELAULT_EXCLUDED_PATHS)
+                , NULL
+                , SIMPLE_PATTERN_EXACT
         );
 
         excluded_filesystems = simple_pattern_create(
                 config_get(CONFIG_SECTION_GETMNTINFO, "exclude space metrics on filesystems",
-                           DEFAULT_EXCLUDED_FILESYSTEMS),
-                SIMPLE_PATTERN_EXACT
+                           DEFAULT_EXCLUDED_FILESYSTEMS)
+                , NULL
+                , SIMPLE_PATTERN_EXACT
         );
     }
 
@@ -223,6 +225,8 @@ int do_getmntinfo(int update_every, usec_t dt) {
                                                               "disk.space",
                                                               title,
                                                               "GB",
+                                                              "freebsd",
+                                                              "getmntinfo",
                                                               2023,
                                                               update_every,
                                                               RRDSET_TYPE_STACKED
@@ -260,6 +264,8 @@ int do_getmntinfo(int update_every, usec_t dt) {
                                                                "disk.inodes",
                                                                title,
                                                                "Inodes",
+                                                               "freebsd",
+                                                               "getmntinfo",
                                                                2024,
                                                                update_every,
                                                                RRDSET_TYPE_STACKED

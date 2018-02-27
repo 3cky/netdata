@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 # Description: web log netdata python.d module
 # Author: l2isbad
-import re
+
 import bisect
-from os import access, R_OK
-from os.path import getsize
+import re
+import os
+
 from collections import namedtuple, defaultdict
 from copy import deepcopy
+
 try:
     from itertools import filterfalse
 except ImportError:
+    from itertools import ifilter as filter
     from itertools import ifilterfalse as filterfalse
-from base import LogService
-import msg
 
-priority = 60000
-retries = 60
+from bases.collection import read_last_line
+from bases.FrameworkServices.LogService import LogService
+
 
 ORDER_APACHE_CACHE = ['apache_cache']
 
@@ -242,6 +244,8 @@ SQUID_CODES = dict(TCP='squid_transport_methods', UDP='squid_transport_methods',
                    DENIED='squid_cache_events', NOFETCH='squid_cache_events', TUNNEL='squid_cache_events',
                    ABORTED='squid_transport_errors', TIMEOUT='squid_transport_errors')
 
+REQUEST_REGEX = re.compile(r'(?P<method>[A-Z]+) (?P<url>[^ ]+) [A-Z]+/(?P<http_version>\d(?:.\d)?)')
+
 
 class Service(LogService):
     def __init__(self, configuration=None, name=None):
@@ -250,8 +254,9 @@ class Service(LogService):
         :param name:
         """
         LogService.__init__(self, configuration=configuration, name=name)
-        self.log_type = self.configuration.get('type', 'web')
+        self.configuration = configuration
         self.log_path = self.configuration.get('path')
+        self.job = None
 
     def check(self):
         """
@@ -263,123 +268,43 @@ class Service(LogService):
         4. other checks depends on log "type"
         """
 
+        log_type = self.configuration.get('type', 'web')
         log_types = dict(web=Web, apache_cache=ApacheCache, squid=Squid)
 
-        if self.log_type not in log_types:
-            self.error('bad log type (%s). Supported types: %s' % (self.log_type, log_types.keys()))
+        if log_type not in log_types:
+            self.error("bad log type {log_type}. Supported types: {types}".format(log_type=log_type,
+                                                                                  types=log_types.keys()))
             return False
 
         if not self.log_path:
             self.error('log path is not specified')
             return False
 
-        if not (self._find_recent_log_file() and access(self.log_path, R_OK)):
-            self.error('%s not readable or not exist' % self.log_path)
+        if not (self._find_recent_log_file() and os.access(self.log_path, os.R_OK)):
+            self.error('{log_file} not readable or not exist'.format(log_file=self.log_path))
             return False
 
-        if not getsize(self.log_path):
-            self.error('%s is empty' % self.log_path)
+        if not os.path.getsize(self.log_path):
+            self.error('{log_file} is empty'.format(log_file=self.log_path))
             return False
 
-        self.configuration['update_every'] = self.update_every
-        self.configuration['name'] = self.name
-        self.configuration['override_name'] = self.override_name
-        self.configuration['_dimensions'] = self._dimensions
-        self.configuration['path'] = self.log_path
-
-        cls = log_types[self.log_type]
-        self.Job = cls(configuration=self.configuration)
-        if self.Job.check():
-            self.order = self.Job.order
-            self.definitions = self.Job.definitions
-            self.info('Current log file: %s' % self.log_path)
+        self.job = log_types[log_type](self)
+        if self.job.check():
+            self.order = self.job.order
+            self.definitions = self.job.definitions
             return True
         return False
 
     def _get_data(self):
-        return self.Job.get_data(self._get_raw_data())
+        return self.job.get_data(self._get_raw_data())
 
 
-class Mixin:
-    def filter_data(self, raw_data):
-        """
-        :param raw_data: list
-        :return:
-        """
-        if not self.pre_filter:
-            return raw_data
-        filtered = raw_data
-        for elem in self.pre_filter:
-            if elem.description == 'filter_include':
-                filtered = filter(elem.func, filtered)
-            elif elem.description == 'filter_exclude':
-                filtered = filterfalse(elem.func, filtered)
-        return filtered
-
-    def add_new_dimension(self, dimension_id, chart_key, dimension=None,
-                          algorithm='incremental', multiplier=1, divisor=1):
-        """
-        :param dimension:
-        :param chart_key:
-        :param dimension_id:
-        :param algorithm:
-        :param multiplier:
-        :param divisor:
-        :return:
-        """
-
-        self.data[dimension_id] = 0
-        # SET method check if dim in _dimensions
-        self.conf['_dimensions'].append(dimension_id)
-        # UPDATE method do SET only if dim in definitions
-        dimension_list = list(map(str, [dimension_id,
-                                        dimension if dimension else dimension_id,
-                                        algorithm,
-                                        multiplier,
-                                        divisor]))
-        self.definitions[chart_key]['lines'].append(dimension_list)
-        job_name = find_job_name(self.conf['override_name'], self.conf['name'])
-        opts = self.definitions[chart_key]['options']
-        chart = 'CHART %s.%s "" "%s" %s "%s" %s %s 60000 %s\n' % (job_name, chart_key,
-                                                                  opts[1], opts[2], opts[3],
-                                                                  opts[4], opts[5], self.conf['update_every'])
-        print(chart + "DIMENSION %s\n" % ' '.join(dimension_list))
-
-    def get_last_line(self):
-        """
-        Reads last line from the log file
-        :return: str:
-        """
-        # Read last line (or first if there is only one line)
-        with open(self.conf['path'], 'rb') as logs:
-            logs.seek(-2, 2)
-            while logs.read(1) != b'\n':
-                logs.seek(-2, 1)
-                if logs.tell() == 0:
-                    break
-            last_line = logs.readline()
-        try:
-            return last_line.decode()
-        except UnicodeDecodeError:
-            try:
-                return last_line.decode(encoding='utf-8')
-            except (TypeError, UnicodeDecodeError) as error:
-                msg.error('web_log', str(error))
-                return False
-
-    @staticmethod
-    def error(*params):
-        msg.error('web_log', ' '.join(map(str, params)))
-
-    @staticmethod
-    def info(*params):
-        msg.info('web_log', ' '.join(map(str, params)))
-
-
-class Web(Mixin):
-    def __init__(self, configuration):
-        self.conf = configuration
-        self.pre_filter = check_patterns('filter', self.conf.get('filter'))
+class Web:
+    def __init__(self, service):
+        self.service = service
+        self.order = ORDER_WEB[:]
+        self.definitions = deepcopy(CHARTS_WEB)
+        self.pre_filter = check_patterns('filter', self.configuration.get('filter'))
         self.storage = dict()
         self.data = {'bytes_sent': 0, 'resp_length': 0, 'resp_time_min': 0, 'resp_time_max': 0,
                      'resp_time_avg': 0, 'resp_time_upstream_min': 0, 'resp_time_upstream_max': 0,
@@ -388,23 +313,27 @@ class Web(Mixin):
                      'req_ipv6': 0, 'unique_tot_ipv4': 0, 'unique_tot_ipv6': 0, 'successful_requests': 0,
                      'redirects': 0, 'bad_requests': 0, 'server_errors': 0, 'other_requests': 0, 'GET': 0}
 
+    def __getattr__(self, item):
+        return getattr(self.service, item)
+
     def check(self):
-        last_line = self.get_last_line()
+        last_line = read_last_line(self.log_path)
         if not last_line:
             return False
         # Custom_log_format or predefined log format.
-        if self.conf.get('custom_log_format'):
+        if self.configuration.get('custom_log_format'):
             match_dict, error = self.find_regex_custom(last_line)
         else:
             match_dict, error = self.find_regex(last_line)
 
         # "match_dict" is None if there are any problems
         if match_dict is None:
-            self.error(str(error))
+            self.error(error)
             return False
+
         self.storage['unique_all_time'] = list()
-        self.storage['url_pattern'] = check_patterns('url_pattern', self.conf.get('categories'))
-        self.storage['user_pattern'] = check_patterns('user_pattern', self.conf.get('user_defined'))
+        self.storage['url_pattern'] = check_patterns('url_pattern', self.configuration.get('categories'))
+        self.storage['user_pattern'] = check_patterns('user_pattern', self.configuration.get('user_defined'))
 
         self.create_web_charts(match_dict)  # Create charts
         self.info('Collected data: %s' % list(match_dict.keys()))
@@ -416,20 +345,21 @@ class Web(Mixin):
         :return:
         Create/remove additional charts depending on the 'match_dict' keys and configuration file options
         """
-        self.order = ORDER_WEB[:]
-        self.definitions = deepcopy(CHARTS_WEB)
-
         if 'resp_time' not in match_dict:
             self.order.remove('response_time')
         if 'resp_time_upstream' not in match_dict:
             self.order.remove('response_time_upstream')
 
-        if not self.conf.get('all_time', True):
+        if not self.configuration.get('all_time', True):
             self.order.remove('clients_all')
 
         # Add 'detailed_response_codes' chart if specified in the configuration
-        if self.conf.get('detailed_response_codes', True):
-            codes = DET_RESP_AGGR[:1] if self.conf.get('detailed_response_aggregate', True) else DET_RESP_AGGR[1:]
+        if self.configuration.get('detailed_response_codes', True):
+            if self.configuration.get('detailed_response_aggregate', True):
+                codes = DET_RESP_AGGR[:1]
+            else:
+                codes = DET_RESP_AGGR[1:]
+
             for code in codes:
                 self.order.append('detailed_response_codes%s' % code)
                 self.definitions['detailed_response_codes%s' % code] \
@@ -440,9 +370,8 @@ class Web(Mixin):
         # Add 'requests_per_url' chart if specified in the configuration
         if self.storage['url_pattern']:
             for elem in self.storage['url_pattern']:
-                self.definitions['requests_per_url']['lines'].append([elem.description,
-                                                                      elem.description[12:],
-                                                                      'incremental'])
+                dim = [elem.description, elem.description[12:], 'incremental']
+                self.definitions['requests_per_url']['lines'].append(dim)
                 self.data[elem.description] = 0
             self.data['url_pattern_other'] = 0
         else:
@@ -451,9 +380,8 @@ class Web(Mixin):
         # Add 'requests_per_user_defined' chart if specified in the configuration
         if self.storage['user_pattern'] and 'user_defined' in match_dict:
             for elem in self.storage['user_pattern']:
-                self.definitions['requests_per_user_defined']['lines'].append([elem.description,
-                                                                               elem.description[13:],
-                                                                               'incremental'])
+                dim = [elem.description, elem.description[13:], 'incremental']
+                self.definitions['requests_per_user_defined']['lines'].append(dim)
                 self.data[elem.description] = 0
             self.data['user_pattern_other'] = 0
         else:
@@ -469,12 +397,11 @@ class Web(Mixin):
         if not raw_data:
             return None if raw_data is None else self.data
 
-        filtered_data = self.filter_data(raw_data=raw_data)
+        filtered_data = filter_data(raw_data=raw_data, pre_filter=self.pre_filter)
 
         unique_current = set()
         timings = defaultdict(lambda: dict(minimum=None, maximum=0, summary=0, count=0))
 
-        ip_address_counter = {'unique_cur_ip': 0}
         for line in filtered_data:
             match = self.storage['regex'].search(line)
             if match:
@@ -485,39 +412,24 @@ class Web(Mixin):
                 except KeyError:
                     self.data['0xx'] += 1
                 # detailed response code
-                if self.conf.get('detailed_response_codes', True):
+                if self.configuration.get('detailed_response_codes', True):
                     self.get_data_per_response_codes_detailed(code=match_dict['code'])
                 # response statuses
                 self.get_data_per_statuses(code=match_dict['code'])
-                # requests per url
-                if self.storage['url_pattern']:
-                    self.get_data_per_pattern(row=match_dict['url'],
-                                              other='url_pattern_other',
-                                              pattern=self.storage['url_pattern'])
                 # requests per user defined pattern
                 if self.storage['user_pattern'] and 'user_defined' in match_dict:
                     self.get_data_per_pattern(row=match_dict['user_defined'],
                                               other='user_pattern_other',
                                               pattern=self.storage['user_pattern'])
-                # requests per http method
-                if match_dict['method'] not in self.data:
-                    self.add_new_dimension(dimension_id=match_dict['method'],
-                                           chart_key='http_method')
-                self.data[match_dict['method']] += 1
-                # requests per http version
-                if 'http_version' in match_dict:
-                    dim_id = match_dict['http_version'].replace('.', '_')
-                    if dim_id not in self.data:
-                        self.add_new_dimension(dimension_id=dim_id,
-                                               chart_key='http_version',
-                                               dimension=match_dict['http_version'])
-                    self.data[dim_id] += 1
+                # method, url, http version
+                self.get_data_from_request_field(match_dict=match_dict)
                 # bandwidth sent
                 bytes_sent = match_dict['bytes_sent'] if '-' not in match_dict['bytes_sent'] else 0
                 self.data['bytes_sent'] += int(bytes_sent)
                 # request processing time and bandwidth received
                 if 'resp_length' in match_dict:
-                    self.data['resp_length'] += int(match_dict['resp_length'])
+                    resp_length = match_dict['resp_length'] if '-' not in match_dict['resp_length'] else 0
+                    self.data['resp_length'] += int(resp_length)
                 if 'resp_time' in match_dict:
                     get_timings(timings=timings['resp_time'],
                                 time=self.storage['func_resp_time'](float(match_dict['resp_time'])))
@@ -525,13 +437,14 @@ class Web(Mixin):
                     get_timings(timings=timings['resp_time_upstream'],
                                 time=self.storage['func_resp_time'](float(match_dict['resp_time_upstream'])))
                 # requests per ip proto
-                proto = 'ipv4' if '.' in match_dict['address'] else 'ipv6'
+                proto = 'ipv6' if ':' in match_dict['address'] else 'ipv4'
                 self.data['req_' + proto] += 1
                 # unique clients ips
-                if address_not_in_pool(pool=self.storage['unique_all_time'],
-                                       address=match_dict['address'],
-                                       pool_size=self.data['unique_tot_ipv4'] + self.data['unique_tot_ipv6']):
-                    self.data['unique_tot_' + proto] += 1
+                if self.configuration.get('all_time', True):
+                    if address_not_in_pool(pool=self.storage['unique_all_time'],
+                                           address=match_dict['address'],
+                                           pool_size=self.data['unique_tot_ipv4'] + self.data['unique_tot_ipv6']):
+                        self.data['unique_tot_' + proto] += 1
                 if match_dict['address'] not in unique_current:
                     self.data['unique_cur_' + proto] += 1
                     unique_current.add(match_dict['address'])
@@ -557,46 +470,36 @@ class Web(Mixin):
         """
         # REGEX: 1.IPv4 address 2.HTTP method 3. URL 4. Response code
         # 5. Bytes sent 6. Response length 7. Response process time
-        default = re.compile(r'(?P<address>[\da-f.:]+)'
-                             r' -.*?"(?P<method>[A-Z]+)'
-                             r' (?P<url>[^ ]+)'
-                             r' [A-Z]+/(?P<http_version>\d\.\d)"'
+        default = re.compile(r'(?P<address>[\da-f.:]+|localhost)'
+                             r' -.*?"(?P<request>[^"]*)"'
                              r' (?P<code>[1-9]\d{2})'
                              r' (?P<bytes_sent>\d+|-)')
 
-        apache_ext_insert = re.compile(r'(?P<address>[\da-f.:]+)'
-                                       r' -.*?"(?P<method>[A-Z]+)'
-                                       r' (?P<url>[^ ]+)'
-                                       r' [A-Z]+/(?P<http_version>\d\.\d)"'
+        apache_ext_insert = re.compile(r'(?P<address>[\da-f.:]+|localhost)'
+                                       r' -.*?"(?P<request>[^"]*)"'
                                        r' (?P<code>[1-9]\d{2})'
                                        r' (?P<bytes_sent>\d+|-)'
-                                       r' (?P<resp_length>\d+)'
+                                       r' (?P<resp_length>\d+|-)'
                                        r' (?P<resp_time>\d+) ')
 
-        apache_ext_append = re.compile(r'(?P<address>[\da-f.:]+)'
-                                       r' -.*?"(?P<method>[A-Z]+)'
-                                       r' (?P<url>[^ ]+)'
-                                       r' [A-Z]+/(?P<http_version>\d\.\d)"'
+        apache_ext_append = re.compile(r'(?P<address>[\da-f.:]+|localhost)'
+                                       r' -.*?"(?P<request>[^"]*)"'
                                        r' (?P<code>[1-9]\d{2})'
                                        r' (?P<bytes_sent>\d+|-)'
                                        r' .*?'
-                                       r' (?P<resp_length>\d+)'
+                                       r' (?P<resp_length>\d+|-)'
                                        r' (?P<resp_time>\d+)'
                                        r'(?: |$)')
 
         nginx_ext_insert = re.compile(r'(?P<address>[\da-f.:]+)'
-                                      r' -.*?"(?P<method>[A-Z]+)'
-                                      r' (?P<url>[^ ]+)'
-                                      r' [A-Z]+/(?P<http_version>\d\.\d)"'
+                                      r' -.*?"(?P<request>[^"]*)"'
                                       r' (?P<code>[1-9]\d{2})'
                                       r' (?P<bytes_sent>\d+)'
                                       r' (?P<resp_length>\d+)'
                                       r' (?P<resp_time>\d+\.\d+) ')
 
         nginx_ext2_insert = re.compile(r'(?P<address>[\da-f.:]+)'
-                                       r' -.*?"(?P<method>[A-Z]+)'
-                                       r' (?P<url>[^ ]+)'
-                                       r' [A-Z]+/(?P<http_version>\d\.\d)"'
+                                       r' -.*?"(?P<request>[^"]*)"'
                                        r' (?P<code>[1-9]\d{2})'
                                        r' (?P<bytes_sent>\d+)'
                                        r' (?P<resp_length>\d+)'
@@ -604,9 +507,7 @@ class Web(Mixin):
                                        r' (?P<resp_time_upstream>[\d.-]+) ')
 
         nginx_ext_append = re.compile(r'(?P<address>[\da-f.:]+)'
-                                      r' -.*?"(?P<method>[A-Z]+)'
-                                      r' (?P<url>[^ ]+)'
-                                      r' [A-Z]+/(?P<http_version>\d\.\d)"'
+                                      r' -.*?"(?P<request>[^"]*)"'
                                       r' (?P<code>[1-9]\d{2})'
                                       r' (?P<bytes_sent>\d+)'
                                       r' .*?'
@@ -620,7 +521,7 @@ class Web(Mixin):
             return time * 1000000
 
         r_regex = [apache_ext_insert, apache_ext_append,
-                   nginx_ext2_insert, nginx_ext_insert,  nginx_ext_append,
+                   nginx_ext2_insert, nginx_ext_insert, nginx_ext_append,
                    default]
         r_function = [func_usec, func_usec, func_sec, func_sec, func_sec, func_usec]
         regex_function = zip(r_regex, r_function)
@@ -665,14 +566,14 @@ class Web(Mixin):
          ("resp_length" is integer or "-", "resp_time" is integer or float)
 
         """
-        if not hasattr(self.conf.get('custom_log_format'), 'keys'):
+        if not hasattr(self.configuration.get('custom_log_format'), 'keys'):
             return find_regex_return(msg='Custom log: "custom_log_format" is not a <dict>')
 
-        pattern = self.conf.get('custom_log_format', dict()).get('pattern')
+        pattern = self.configuration.get('custom_log_format', dict()).get('pattern')
         if not (pattern and isinstance(pattern, str)):
             return find_regex_return(msg='Custom log: "pattern" option is not specified or type is not <str>')
 
-        resp_time_func = self.conf.get('custom_log_format', dict()).get('time_multiplier') or 0
+        resp_time_func = self.configuration.get('custom_log_format', dict()).get('time_multiplier') or 0
 
         if not isinstance(resp_time_func, int):
             return find_regex_return(msg='Custom log: "time_multiplier" is not an integer')
@@ -681,6 +582,7 @@ class Web(Mixin):
             regex = re.compile(pattern)
         except re.error as error:
             return find_regex_return(msg='Pattern compile error: %s' % str(error))
+
         match = regex.search(last_line)
         if not match:
             return find_regex_return(msg='Custom log: pattern search FAILED')
@@ -689,14 +591,14 @@ class Web(Mixin):
         if match_dict is None:
             return find_regex_return(msg='Custom log: search OK but contains no named subgroups'
                                          ' (you need to use ?P<subgroup_name>)')
-        mandatory_dict = {'address': r'[\da-f.:]+',
+        mandatory_dict = {'address': r'[\w.:-]+',
                           'code': r'[1-9]\d{2}',
-                          'method': r'[A-Z]+',
                           'bytes_sent': r'\d+|-'}
-        optional_dict = {'resp_length': r'\d+',
+        optional_dict = {'resp_length': r'\d+|-',
                          'resp_time': r'[\d.]+',
                          'resp_time_upstream': r'[\d.-]+',
-                         'http_version': r'\d\.\d'}
+                         'method': r'[A-Z]+',
+                         'http_version': r'\d(?:.\d)?'}
 
         mandatory_values = set(mandatory_dict) - set(match_dict)
         if mandatory_values:
@@ -722,6 +624,36 @@ class Web(Mixin):
         self.storage['regex'] = regex
         return find_regex_return(match_dict=match_dict)
 
+    def get_data_from_request_field(self, match_dict):
+        if match_dict.get('request'):
+            match_dict = REQUEST_REGEX.search(match_dict['request'])
+            if match_dict:
+                match_dict = match_dict.groupdict()
+            else:
+                return
+        # requests per url
+        if match_dict.get('url') and self.storage['url_pattern']:
+            self.get_data_per_pattern(row=match_dict['url'],
+                                      other='url_pattern_other',
+                                      pattern=self.storage['url_pattern'])
+        # requests per http method
+        if match_dict.get('method'):
+            if match_dict['method'] not in self.data:
+                self.charts['http_method'].add_dimension([match_dict['method'],
+                                                          match_dict['method'],
+                                                          'incremental'])
+                self.data[match_dict['method']] = 0
+            self.data[match_dict['method']] += 1
+        # requests per http version
+        if match_dict.get('http_version'):
+            dim_id = match_dict['http_version'].replace('.', '_')
+            if dim_id not in self.data:
+                self.charts['http_version'].add_dimension([dim_id,
+                                                           match_dict['http_version'],
+                                                           'incremental'])
+                self.data[dim_id] = 0
+            self.data[dim_id] += 1
+
     def get_data_per_response_codes_detailed(self, code):
         """
         :param code: str: CODE from parsed line. Ex.: '202, '499'
@@ -729,14 +661,14 @@ class Web(Mixin):
         Calls add_new_dimension method If the value is found for the first time
         """
         if code not in self.data:
-            if self.conf.get('detailed_response_aggregate', True):
-                self.add_new_dimension(dimension_id=code,
-                                       chart_key='detailed_response_codes')
+            if self.configuration.get('detailed_response_aggregate', True):
+                self.charts['detailed_response_codes'].add_dimension([code, code, 'incremental'])
+                self.data[code] = 0
             else:
                 code_index = int(code[0]) if int(code[0]) < 6 else 6
                 chart_key = 'detailed_response_codes' + DET_RESP_AGGR[code_index]
-                self.add_new_dimension(dimension_id=code,
-                                       chart_key=chart_key)
+                self.charts[chart_key].add_dimension([code, code, 'incremental'])
+                self.data[code] = 0
         self.data[code] += 1
 
     def get_data_per_pattern(self, row, other, pattern):
@@ -776,8 +708,8 @@ class Web(Mixin):
 
 
 class ApacheCache:
-    def __init__(self, configuration):
-        self.conf = configuration
+    def __init__(self, service):
+        self.service = service
         self.order = ORDER_APACHE_CACHE
         self.definitions = CHARTS_APACHE_CACHE
 
@@ -801,12 +733,12 @@ class ApacheCache:
         return data
 
 
-class Squid(Mixin):
-    def __init__(self, configuration):
-        self.conf = configuration
+class Squid:
+    def __init__(self, service):
+        self.service = service
         self.order = ORDER_SQUID
         self.definitions = CHARTS_SQUID
-        self.pre_filter = check_patterns('filter', self.conf.get('filter'))
+        self.pre_filter = check_patterns('filter', self.configuration.get('filter'))
         self.storage = dict()
         self.data = {'duration_max': 0, 'duration_avg': 0, 'duration_min': 0, 'bytes': 0,
                      '0xx': 0, '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0,
@@ -815,8 +747,11 @@ class Squid(Mixin):
                      'redirects': 0, 'bad_requests': 0, 'server_errors': 0, 'other_requests': 0
                      }
 
+    def __getattr__(self, item):
+        return getattr(self.service, item)
+
     def check(self):
-        last_line = self.get_last_line()
+        last_line = read_last_line(self.log_path)
         if not last_line:
             return False
         self.storage['unique_all_time'] = list()
@@ -835,23 +770,32 @@ class Squid(Mixin):
         if not match:
             self.error('Regex not matches (%s)' % self.storage['regex'].pattern)
             return False
-        self.storage['dynamic'] = {'squid_code': {'chart': 'squid_code',
-                                                  'func': None},
-                                   'http_code': {'chart': 'squid_detailed_response_codes',
-                                                 'func': None},
-                                   'hier_code': {'chart': 'squid_hier_code',
-                                                 'func': lambda v: v.replace('HIER_', '')},
-                                   'method': {'chart': 'squid_method',
-                                              'func': None},
-                                   'mime_type': {'chart': 'squid_mime_type',
-                                                 'func': lambda v: v.split('/')[0]}}
+        self.storage['dynamic'] = {
+            'http_code':
+                {'chart': 'squid_detailed_response_codes',
+                 'func_dim_id': None,
+                 'func_dim': None},
+            'hier_code': {
+                'chart': 'squid_hier_code',
+                'func_dim_id': None,
+                'func_dim': lambda v: v.replace('HIER_', '')},
+            'method': {
+                'chart': 'squid_method',
+                'func_dim_id': None,
+                'func_dim': None},
+            'mime_type': {
+                'chart': 'squid_mime_type',
+                'func_dim_id': lambda v: v.split('/')[0],
+                'func_dim': None}}
+        if not self.configuration.get('all_time', True):
+            self.order.remove('squid_clients_all')
         return True
 
     def get_data(self, raw_data=None):
         if not raw_data:
             return None if raw_data is None else self.data
 
-        filtered_data = self.filter_data(raw_data=raw_data)
+        filtered_data = filter_data(raw_data=raw_data, pre_filter=self.pre_filter)
 
         unique_ip = set()
         timings = defaultdict(lambda: dict(minimum=None, maximum=0, summary=0, count=0))
@@ -875,10 +819,11 @@ class Squid(Mixin):
 
                 proto = 'ipv4' if '.' in match['client_address'] else 'ipv6'
                 # unique clients ips
-                if address_not_in_pool(pool=self.storage['unique_all_time'],
-                                       address=match['client_address'],
-                                       pool_size=self.data['unique_tot_ipv4'] + self.data['unique_tot_ipv6']):
-                    self.data['unique_tot_' + proto] += 1
+                if self.configuration.get('all_time', True):
+                    if address_not_in_pool(pool=self.storage['unique_all_time'],
+                                           address=match['client_address'],
+                                           pool_size=self.data['unique_tot_ipv4'] + self.data['unique_tot_ipv6']):
+                        self.data['unique_tot_' + proto] += 1
 
                 if match['client_address'] not in unique_ip:
                     self.data['unique_' + proto] += 1
@@ -887,10 +832,13 @@ class Squid(Mixin):
                 for key, values in self.storage['dynamic'].items():
                     if match[key] == '-':
                         continue
-                    dimension_id = values['func'](match[key]) if values['func'] else match[key]
+                    dimension_id = values['func_dim_id'](match[key]) if values['func_dim_id'] else match[key]
                     if dimension_id not in self.data:
-                        self.add_new_dimension(dimension_id=dimension_id,
-                                               chart_key=values['chart'])
+                        dimension = values['func_dim'](match[key]) if values['func_dim'] else dimension_id
+                        self.charts[values['chart']].add_dimension([dimension_id,
+                                                                    dimension,
+                                                                    'incremental'])
+                        self.data[dimension_id] = 0
                     self.data[dimension_id] += 1
             else:
                 self.data['unmatched'] += 1
@@ -923,14 +871,21 @@ class Squid(Mixin):
         :param code: str: squid response code. Ex.: 'TCP_MISS', 'TCP_MISS_ABORTED'
         :return:
         """
+        if code not in self.data:
+            self.charts['squid_code'].add_dimension([code, code, 'incremental'])
+            self.data[code] = 0
+        self.data[code] += 1
+
         for tag in code.split('_'):
             try:
                 chart_key = SQUID_CODES[tag]
             except KeyError:
                 continue
-            if tag not in self.data:
-                self.add_new_dimension(dimension_id=tag, chart_key=chart_key)
-            self.data[tag] += 1
+            dimension_id = '_'.join(['code_detailed', tag])
+            if dimension_id not in self.data:
+                self.charts[chart_key].add_dimension([dimension_id, tag, 'incremental'])
+                self.data[dimension_id] = 0
+            self.data[dimension_id] += 1
 
 
 def get_timings(timings, time):
@@ -1002,6 +957,7 @@ def check_patterns(string, dimension_regex_dict):
     def func_search(pattern):
         def closure(v):
             return pattern.search(v)
+
         return closure
 
     for dimension, regex in dimension_regex_dict.items():
@@ -1013,14 +969,19 @@ def check_patterns(string, dimension_regex_dict):
     return result or None
 
 
-def find_job_name(override_name, name):
+def filter_data(raw_data, pre_filter):
     """
-    :param override_name: str: 'name' var from configuration file
-    :param name: str: 'job_name' from configuration file
-    :return: str: new job name
-    We need this for dynamic charts. Actually the same logic as in python.d.plugin.
+    :param raw_data:
+    :param pre_filter:
+    :return:
     """
-    add_to_name = override_name or name
-    if add_to_name:
-        return '_'.join(['web_log', re.sub('\s+', '_', add_to_name)])
-    return 'web_log'
+
+    if not pre_filter:
+        return raw_data
+    filtered = raw_data
+    for elem in pre_filter:
+        if elem.description == 'filter_include':
+            filtered = filter(elem.func, filtered)
+        elif elem.description == 'filter_exclude':
+            filtered = filterfalse(elem.func, filtered)
+    return filtered

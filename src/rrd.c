@@ -14,6 +14,7 @@ int rrd_delete_unupdated_dimensions = 0;
 int default_rrd_update_every = UPDATE_EVERY;
 int default_rrd_history_entries = RRD_DEFAULT_HISTORY_ENTRIES;
 RRD_MEMORY_MODE default_rrd_memory_mode = RRD_MEMORY_MODE_SAVE;
+int gap_when_lost_iterations_above = 1;
 
 
 // ----------------------------------------------------------------------------
@@ -31,18 +32,27 @@ inline const char *rrd_memory_mode_name(RRD_MEMORY_MODE id) {
             return RRD_MEMORY_MODE_NONE_NAME;
 
         case RRD_MEMORY_MODE_SAVE:
-        default:
             return RRD_MEMORY_MODE_SAVE_NAME;
+
+        case RRD_MEMORY_MODE_ALLOC:
+            return RRD_MEMORY_MODE_ALLOC_NAME;
     }
+
+    return RRD_MEMORY_MODE_SAVE_NAME;
 }
 
 RRD_MEMORY_MODE rrd_memory_mode_id(const char *name) {
     if(unlikely(!strcmp(name, RRD_MEMORY_MODE_RAM_NAME)))
         return RRD_MEMORY_MODE_RAM;
+
     else if(unlikely(!strcmp(name, RRD_MEMORY_MODE_MAP_NAME)))
         return RRD_MEMORY_MODE_MAP;
+
     else if(unlikely(!strcmp(name, RRD_MEMORY_MODE_NONE_NAME)))
         return RRD_MEMORY_MODE_NONE;
+
+    else if(unlikely(!strcmp(name, RRD_MEMORY_MODE_ALLOC_NAME)))
+        return RRD_MEMORY_MODE_ALLOC;
 
     return RRD_MEMORY_MODE_SAVE;
 }

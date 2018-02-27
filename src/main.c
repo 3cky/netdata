@@ -3,60 +3,78 @@
 extern void *cgroups_main(void *ptr);
 
 void netdata_cleanup_and_exit(int ret) {
-    netdata_exit = 1;
+    // enabling this, is wrong
+    // because the threads will be cancelled while cleaning up
+    // netdata_exit = 1;
 
     error_log_limit_unlimited();
+    info("EXIT: netdata prepares to exit with code %d...", ret);
 
-    debug(D_EXIT, "Called: netdata_cleanup_and_exit()");
+    // cleanup/save the database and exit
+    info("EXIT: cleaning up the database...");
+    rrdhost_cleanup_all();
 
-    // save the database
-    rrdhost_save_all();
+    if(!ret) {
+        // exit cleanly
+
+        // stop everything
+        info("EXIT: stopping master threads...");
+        cancel_main_threads();
+
+        // free the database
+        info("EXIT: freeing database memory...");
+        rrdhost_free_all();
+    }
 
     // unlink the pid
     if(pidfile[0]) {
+        info("EXIT: removing netdata PID file '%s'...", pidfile);
         if(unlink(pidfile) != 0)
-            error("Cannot unlink pidfile '%s'.", pidfile);
+            error("EXIT: cannot unlink pidfile '%s'.", pidfile);
     }
 
-#ifdef NETDATA_INTERNAL_CHECKS
-    // kill all childs
-    //kill_childs();
-
-    // free database
-    sleep(2);
-    rrdhost_free_all();
-#endif
-
-    info("netdata exiting. Bye bye...");
+    info("EXIT: all done - netdata is now exiting - bye bye...");
     exit(ret);
 }
 
 struct netdata_static_thread static_threads[] = {
+
 #ifdef INTERNAL_PLUGIN_NFACCT
-// nfacct requires root access
+    // nfacct requires root access
     // so, we build it as an external plugin with setuid to root
-    {"nfacct",              CONFIG_SECTION_PLUGINS,  "nfacct",     1, NULL, NULL, nfacct_main},
+    {"PLUGIN[nfacct]",       CONFIG_SECTION_PLUGINS,  "nfacct",     1, NULL, NULL, nfacct_main},
 #endif
 
-    {"tc",                  CONFIG_SECTION_PLUGINS,  "tc",         1, NULL, NULL, tc_main},
-    {"idlejitter",          CONFIG_SECTION_PLUGINS,  "idlejitter", 1, NULL, NULL, cpuidlejitter_main},
+#ifdef NETDATA_INTERNAL_CHECKS
+    // debugging plugin
+    {"PLUGIN[check]",        CONFIG_SECTION_PLUGINS,  "checks",     0, NULL, NULL, checks_main},
+#endif
+
 #if defined(__FreeBSD__)
-    {"freebsd",             CONFIG_SECTION_PLUGINS,  "freebsd",    1, NULL, NULL, freebsd_main},
+    // FreeBSD internal plugins
+    {"PLUGIN[freebsd]",      CONFIG_SECTION_PLUGINS,  "freebsd",    1, NULL, NULL, freebsd_main},
 #elif defined(__APPLE__)
-    {"macos",               CONFIG_SECTION_PLUGINS,  "macos",      1, NULL, NULL, macos_main},
+    // macOS internal plugins
+    {"PLUGIN[macos]",        CONFIG_SECTION_PLUGINS,  "macos",      1, NULL, NULL, macos_main},
 #else
-    {"proc",                CONFIG_SECTION_PLUGINS,  "proc",       1, NULL, NULL, proc_main},
-    {"diskspace",           CONFIG_SECTION_PLUGINS,  "diskspace",  1, NULL, NULL, proc_diskspace_main},
-    {"cgroups",             CONFIG_SECTION_PLUGINS,  "cgroups",    1, NULL, NULL, cgroups_main},
+    // linux internal plugins
+    {"PLUGIN[proc]",         CONFIG_SECTION_PLUGINS,  "proc",       1, NULL, NULL, proc_main},
+    {"PLUGIN[diskspace]",    CONFIG_SECTION_PLUGINS,  "diskspace",  1, NULL, NULL, proc_diskspace_main},
+    {"PLUGIN[cgroup]",       CONFIG_SECTION_PLUGINS,  "cgroups",    1, NULL, NULL, cgroups_main},
+    {"PLUGIN[tc]",           CONFIG_SECTION_PLUGINS,  "tc",         1, NULL, NULL, tc_main},
 #endif /* __FreeBSD__, __APPLE__*/
-    {"check",               CONFIG_SECTION_PLUGINS,  "checks",     0, NULL, NULL, checks_main},
-    {"backends",            NULL,                    NULL,         1, NULL, NULL, backends_main},
-    {"health",              NULL,                    NULL,         1, NULL, NULL, health_main},
-    {"plugins.d",           NULL,                    NULL,         1, NULL, NULL, pluginsd_main},
-    {"web",                 NULL,                    NULL,         1, NULL, NULL, socket_listen_main_multi_threaded},
-    {"web-single-threaded", NULL,                    NULL,         0, NULL, NULL, socket_listen_main_single_threaded},
-    {"push-metrics",        NULL,                    NULL,         0, NULL, NULL, rrdpush_sender_thread},
-    {"statsd",              NULL,                    NULL,         1, NULL, NULL, statsd_main},
+
+    // common plugins for all systems
+    {"PLUGIN[idlejitter]",   CONFIG_SECTION_PLUGINS,  "idlejitter", 1, NULL, NULL, cpuidlejitter_main},
+    {"BACKENDS",            NULL,                    NULL,         1, NULL, NULL, backends_main},
+    {"HEALTH",              NULL,                    NULL,         1, NULL, NULL, health_main},
+    {"PLUGINSD",            NULL,                    NULL,         1, NULL, NULL, pluginsd_main},
+    {"WEB_SERVER[multi]",   NULL,                    NULL,         1, NULL, NULL, socket_listen_main_multi_threaded},
+    {"WEB_SERVER[single]",  NULL,                    NULL,         0, NULL, NULL, socket_listen_main_single_threaded},
+    {"WEB_SERVER[static1]", NULL,                    NULL,         0, NULL, NULL, socket_listen_main_static_threaded},
+    {"STREAM",              NULL,                    NULL,         0, NULL, NULL, rrdpush_sender_thread},
+    {"STATSD",              NULL,                    NULL,         1, NULL, NULL, statsd_main},
+
     {NULL,                  NULL,                    NULL,         0, NULL, NULL, NULL}
 };
 
@@ -65,6 +83,7 @@ void web_server_threading_selection(void) {
 
     int multi_threaded = (web_server_mode == WEB_SERVER_MODE_MULTI_THREADED);
     int single_threaded = (web_server_mode == WEB_SERVER_MODE_SINGLE_THREADED);
+    int static_threaded = (web_server_mode == WEB_SERVER_MODE_STATIC_THREADED);
 
     int i;
     for (i = 0; static_threads[i].name; i++) {
@@ -73,15 +92,26 @@ void web_server_threading_selection(void) {
 
         if (static_threads[i].start_routine == socket_listen_main_single_threaded)
             static_threads[i].enabled = single_threaded;
+
+        if (static_threads[i].start_routine == socket_listen_main_static_threaded)
+            static_threads[i].enabled = static_threaded;
     }
 }
 
 void web_server_config_options(void) {
-    web_client_timeout = (int) config_get_number(CONFIG_SECTION_WEB, "disconnect idle clients after seconds", DEFAULT_DISCONNECT_IDLE_WEB_CLIENTS_AFTER_SECONDS);
+    web_client_timeout = (int) config_get_number(CONFIG_SECTION_WEB, "disconnect idle clients after seconds", web_client_timeout);
+    web_client_first_request_timeout = (int) config_get_number(CONFIG_SECTION_WEB, "timeout for first request", web_client_first_request_timeout);
 
     respect_web_browser_do_not_track_policy = config_get_boolean(CONFIG_SECTION_WEB, "respect do not track policy", respect_web_browser_do_not_track_policy);
     web_x_frame_options = config_get(CONFIG_SECTION_WEB, "x-frame-options response header", "");
     if(!*web_x_frame_options) web_x_frame_options = NULL;
+
+    web_allow_connections_from = simple_pattern_create(config_get(CONFIG_SECTION_WEB, "allow connections from", "localhost *"), NULL, SIMPLE_PATTERN_EXACT);
+    web_allow_dashboard_from   = simple_pattern_create(config_get(CONFIG_SECTION_WEB, "allow dashboard from", "localhost *"), NULL, SIMPLE_PATTERN_EXACT);
+    web_allow_badges_from      = simple_pattern_create(config_get(CONFIG_SECTION_WEB, "allow badges from", "*"), NULL, SIMPLE_PATTERN_EXACT);
+    web_allow_registry_from    = simple_pattern_create(config_get(CONFIG_SECTION_REGISTRY, "allow from", "*"), NULL, SIMPLE_PATTERN_EXACT);
+    web_allow_streaming_from   = simple_pattern_create(config_get(CONFIG_SECTION_WEB, "allow streaming from", "*"), NULL, SIMPLE_PATTERN_EXACT);
+    web_allow_netdataconf_from = simple_pattern_create(config_get(CONFIG_SECTION_WEB, "allow netdata.conf from", "localhost fd* 10.* 192.168.* 172.16.* 172.17.* 172.18.* 172.19.* 172.20.* 172.21.* 172.22.* 172.23.* 172.24.* 172.25.* 172.26.* 172.27.* 172.28.* 172.29.* 172.30.* 172.31.*"), NULL, SIMPLE_PATTERN_EXACT);
 
 #ifdef NETDATA_WITH_ZLIB
     web_enable_gzip = config_get_boolean(CONFIG_SECTION_WEB, "enable gzip compression", web_enable_gzip);
@@ -159,69 +189,40 @@ int killpid(pid_t pid, int sig)
     return ret;
 }
 
-void kill_childs()
-{
+void cancel_main_threads() {
     error_log_limit_unlimited();
 
-    siginfo_t info;
-
-    struct web_client *w;
-    for(w = web_clients; w ; w = w->next) {
-        info("Stopping web client %s", w->client_ip);
-        pthread_cancel(w->thread);
-        // it is detached
-        // pthread_join(w->thread, NULL);
-
-        w->obsolete = 1;
-    }
-
-    int i;
+    int i, found = 0, max = 5 * USEC_PER_SEC, step = 100000;
     for (i = 0; static_threads[i].name != NULL ; i++) {
-        if(static_threads[i].enabled) {
-            info("Stopping %s thread", static_threads[i].name);
-            pthread_cancel(*static_threads[i].thread);
-            // it is detached
-            // pthread_join(*static_threads[i].thread, NULL);
-
-            static_threads[i].enabled = 0;
+        if(static_threads[i].enabled == NETDATA_MAIN_THREAD_RUNNING) {
+            info("EXIT: Stopping master thread: %s", static_threads[i].name);
+            netdata_thread_cancel(*static_threads[i].thread);
+            found++;
         }
     }
 
-    if(tc_child_pid) {
-        info("Killing tc-qos-helper process %d", tc_child_pid);
-        if(killpid(tc_child_pid, SIGTERM) != -1)
-            waitid(P_PID, (id_t) tc_child_pid, &info, WEXITED);
-
-        tc_child_pid = 0;
-    }
-
-    struct plugind *cd;
-    for(cd = pluginsd_root ; cd ; cd = cd->next) {
-        if(cd->enabled && !cd->obsolete) {
-            info("Stopping %s plugin thread", cd->id);
-            pthread_cancel(cd->thread);
-
-            if(cd->pid) {
-                info("killing %s plugin child process pid %d", cd->id, cd->pid);
-                if(killpid(cd->pid, SIGTERM) != -1)
-                    waitid(P_PID, (id_t) cd->pid, &info, WEXITED);
-
-                cd->pid = 0;
-            }
-
-            cd->obsolete = 1;
+    while(found && max > 0) {
+        max -= step;
+        info("Waiting %d threads to finish...", found);
+        sleep_usec(step);
+        found = 0;
+        for (i = 0; static_threads[i].name != NULL ; i++) {
+            if (static_threads[i].enabled != NETDATA_MAIN_THREAD_EXITED)
+                found++;
         }
     }
 
-    // if, for any reason there is any child exited
-    // catch it here
-    info("Cleaning up an other children");
-    waitid(P_PID, 0, &info, WEXITED|WNOHANG);
-
-    info("All threads/childs stopped.");
+    if(found) {
+        for (i = 0; static_threads[i].name != NULL ; i++) {
+            if (static_threads[i].enabled != NETDATA_MAIN_THREAD_EXITED)
+                error("Master thread %s takes too long to exit. Giving up...", static_threads[i].name);
+        }
+    }
+    else
+        info("All threads finished.");
 }
 
-struct option_def options[] = {
+struct option_def option_definitions[] = {
     // opt description                                    arg name       default value
     { 'c', "Configuration file to load.",                 "filename",    CONFIG_DIR "/" CONFIG_FILENAME},
     { 'D', "Do not fork. Run in the foreground.",         NULL,          "run in the background"},
@@ -237,21 +238,21 @@ struct option_def options[] = {
     { 'W', "See Advanced options below.",                 "options",     NULL},
 };
 
-void help(int exitcode) {
+int help(int exitcode) {
     FILE *stream;
     if(exitcode == 0)
         stream = stdout;
     else
         stream = stderr;
 
-    int num_opts = sizeof(options) / sizeof(struct option_def);
+    int num_opts = sizeof(option_definitions) / sizeof(struct option_def);
     int i;
     int max_len_arg = 0;
 
     // Compute maximum argument length
     for( i = 0; i < num_opts; i++ ) {
-        if(options[i].arg_name) {
-            int len_arg = (int)strlen(options[i].arg_name);
+        if(option_definitions[i].arg_name) {
+            int len_arg = (int)strlen(option_definitions[i].arg_name);
             if(len_arg > max_len_arg) max_len_arg = len_arg;
         }
     }
@@ -289,9 +290,9 @@ void help(int exitcode) {
 
     // Output options description.
     for( i = 0; i < num_opts; i++ ) {
-        fprintf(stream, "  -%c %-*s  %s", options[i].val, max_len_arg, options[i].arg_name ? options[i].arg_name : "", options[i].description);
-        if(options[i].default_value) {
-            fprintf(stream, "\n   %c %-*s  Default: %s\n", ' ', max_len_arg, "", options[i].default_value);
+        fprintf(stream, "  -%c %-*s  %s", option_definitions[i].val, max_len_arg, option_definitions[i].arg_name ? option_definitions[i].arg_name : "", option_definitions[i].description);
+        if(option_definitions[i].default_value) {
+            fprintf(stream, "\n   %c %-*s  Default: %s\n", ' ', max_len_arg, "", option_definitions[i].default_value);
         } else {
             fprintf(stream, "\n");
         }
@@ -316,7 +317,7 @@ void help(int exitcode) {
     );
 
     fflush(stream);
-    exit(exitcode);
+    return exitcode;
 }
 
 // TODO: Remove this function with the nix major release.
@@ -410,6 +411,9 @@ static void backwards_compatible_config() {
 
     config_move(CONFIG_SECTION_GLOBAL, "web files group",
                 CONFIG_SECTION_WEB,    "web files group");
+
+    config_move(CONFIG_SECTION_BACKEND, "opentsdb host tags",
+                CONFIG_SECTION_BACKEND, "host tags");
 }
 
 static void get_netdata_configured_variables() {
@@ -451,16 +455,22 @@ static void get_netdata_configured_variables() {
     }
 
     // ------------------------------------------------------------------------
-    // let the plugins know the min update_every
-
     // get system paths
+
     netdata_configured_config_dir  = config_get(CONFIG_SECTION_GLOBAL, "config directory",    CONFIG_DIR);
     netdata_configured_log_dir     = config_get(CONFIG_SECTION_GLOBAL, "log directory",       LOG_DIR);
-    netdata_configured_plugins_dir = config_get(CONFIG_SECTION_GLOBAL, "plugins directory",   PLUGINS_DIR);
     netdata_configured_web_dir     = config_get(CONFIG_SECTION_GLOBAL, "web files directory", WEB_DIR);
     netdata_configured_cache_dir   = config_get(CONFIG_SECTION_GLOBAL, "cache directory",     CACHE_DIR);
     netdata_configured_varlib_dir  = config_get(CONFIG_SECTION_GLOBAL, "lib directory",       VARLIB_DIR);
     netdata_configured_home_dir    = config_get(CONFIG_SECTION_GLOBAL, "home directory",      CACHE_DIR);
+
+    {
+        char plugins_dirs[(FILENAME_MAX * 2) + 1];
+        snprintfz(plugins_dirs, FILENAME_MAX * 2, "\"%s\" \"%s/custom-plugins.d\"", PLUGINS_DIR, CONFIG_DIR);
+        netdata_configured_plugins_dir_base = strdupz(config_get(CONFIG_SECTION_GLOBAL, "plugins directory",  plugins_dirs));
+        quoted_strings_splitter(netdata_configured_plugins_dir_base, plugin_directories, PLUGINSD_MAX_DIRECTORIES, config_isspace);
+        netdata_configured_plugins_dir = plugin_directories[0];
+    }
 
     // ------------------------------------------------------------------------
     // get default memory mode for the database
@@ -486,6 +496,95 @@ static void get_netdata_configured_variables() {
     get_system_pid_max();
 }
 
+static void get_system_timezone(void) {
+    // avoid flood calls to stat(/etc/localtime)
+    // http://stackoverflow.com/questions/4554271/how-to-avoid-excessive-stat-etc-localtime-calls-in-strftime-on-linux
+    const char *tz = getenv("TZ");
+    if(!tz || !*tz)
+        setenv("TZ", config_get(CONFIG_SECTION_GLOBAL, "TZ environment variable", ":/etc/localtime"), 0);
+
+    char buffer[FILENAME_MAX + 1] = "";
+    const char *timezone = NULL;
+    ssize_t ret;
+
+    // use the TZ variable
+    if(tz && *tz && *tz != ':') {
+        timezone = tz;
+        // info("TIMEZONE: using TZ variable '%s'", timezone);
+    }
+
+    // use the contents of /etc/timezone
+    if(!timezone && !read_file("/etc/timezone", buffer, FILENAME_MAX)) {
+        timezone = buffer;
+        // info("TIMEZONE: using the contents of /etc/timezone: '%s'", timezone);
+    }
+
+    // read the link /etc/localtime
+    if(!timezone) {
+        ret = readlink("/etc/localtime", buffer, FILENAME_MAX);
+
+        if(ret > 0) {
+            buffer[ret] = '\0';
+
+            char   *cmp    = "/usr/share/zoneinfo/";
+            size_t cmp_len = strlen(cmp);
+
+            char *s = strstr(buffer, cmp);
+            if (s && s[cmp_len]) {
+                timezone = &s[cmp_len];
+                // info("TIMEZONE: using the link of /etc/localtime: '%s'", timezone);
+            }
+        }
+        else
+            buffer[0] = '\0';
+    }
+
+    // find the timezone from strftime()
+    if(!timezone) {
+        time_t t;
+        struct tm *tmp, tmbuf;
+
+        t = now_realtime_sec();
+        tmp = localtime_r(&t, &tmbuf);
+
+        if (tmp != NULL) {
+            if(strftime(buffer, FILENAME_MAX, "%Z", tmp) == 0)
+                buffer[0] = '\0';
+            else {
+                buffer[FILENAME_MAX] = '\0';
+                timezone = buffer;
+                // info("TIMEZONE: using strftime(): '%s'", timezone);
+            }
+        }
+    }
+
+    if(timezone && *timezone) {
+        // make sure it does not have illegal characters
+        // info("TIMEZONE: fixing '%s'", timezone);
+
+        size_t len = strlen(timezone);
+        char tmp[len + 1];
+        char *d = tmp;
+        *d = '\0';
+
+        while(*timezone) {
+            if(isalnum(*timezone) || *timezone == '_' || *timezone == '/')
+                *d++ = *timezone++;
+            else
+                timezone++;
+        }
+        *d = '\0';
+        strncpyz(buffer, tmp, len);
+        timezone = buffer;
+        // info("TIMEZONE: fixed as '%s'", timezone);
+    }
+
+    if(!timezone || !*timezone)
+        timezone = "unknown";
+
+    netdata_configured_timezone = config_get(CONFIG_SECTION_GLOBAL, "timezone", timezone);
+}
+
 void set_global_environment() {
     {
         char b[16];
@@ -503,11 +602,7 @@ void set_global_environment() {
     setenv("HOME"               , verify_required_directory(netdata_configured_home_dir),    1);
     setenv("NETDATA_HOST_PREFIX", netdata_configured_host_prefix, 1);
 
-    // avoid flood calls to stat(/etc/localtime)
-    // http://stackoverflow.com/questions/4554271/how-to-avoid-excessive-stat-etc-localtime-calls-in-strftime-on-linux
-    const char *tz = getenv("TZ");
-    if(!tz || !*tz)
-        setenv("TZ", config_get(CONFIG_SECTION_GLOBAL, "TZ environment variable", ":/etc/localtime"), 0);
+    get_system_timezone();
 
     // set the path we need
     char path[1024 + 1], *p = getenv("PATH");
@@ -531,8 +626,7 @@ int main(int argc, char **argv) {
     int i;
     int config_loaded = 0;
     int dont_fork = 0;
-    size_t wanted_stacksize = 0, stacksize = 0;
-    pthread_attr_t attr;
+    size_t default_stacksize;
 
     // set the name for logging
     program_name = "netdata";
@@ -568,14 +662,14 @@ int main(int argc, char **argv) {
 
     // parse options
     {
-        int num_opts = sizeof(options) / sizeof(struct option_def);
+        int num_opts = sizeof(option_definitions) / sizeof(struct option_def);
         char optstring[(num_opts * 2) + 1];
 
         int string_i = 0;
         for( i = 0; i < num_opts; i++ ) {
-            optstring[string_i] = options[i].val;
+            optstring[string_i] = option_definitions[i].val;
             string_i++;
-            if(options[i].arg_name) {
+            if(option_definitions[i].arg_name) {
                 optstring[string_i] = ':';
                 string_i++;
             }
@@ -590,7 +684,7 @@ int main(int argc, char **argv) {
                 case 'c':
                     if(config_load(optarg, 1) != 1) {
                         error("Cannot load configuration file %s.", optarg);
-                        exit(1);
+                        return 1;
                     }
                     else {
                         debug(D_OPTIONS, "Configuration loaded from %s.", optarg);
@@ -601,8 +695,7 @@ int main(int argc, char **argv) {
                     dont_fork = 1;
                     break;
                 case 'h':
-                    help(0);
-                    break;
+                    return help(0);
                 case 'i':
                     config_set(CONFIG_SECTION_WEB, "bind to", optarg);
                     break;
@@ -632,7 +725,8 @@ int main(int argc, char **argv) {
                         char* debug_flags_string = "debug_flags=";
 
                         if(strcmp(optarg, "unittest") == 0) {
-                            if(unit_test_str2ld()) exit(1);
+                            if(unit_test_buffer()) return 1;
+                            if(unit_test_str2ld()) return 1;
                             //default_rrd_update_every = 1;
                             //default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
                             //if(!config_loaded) config_load(NULL, 0);
@@ -642,10 +736,10 @@ int main(int argc, char **argv) {
                             default_health_enabled = 0;
                             rrd_init("unittest");
                             default_rrdpush_enabled = 0;
-                            if(run_all_mockup_tests()) exit(1);
-                            if(unit_test_storage()) exit(1);
+                            if(run_all_mockup_tests()) return 1;
+                            if(unit_test_storage()) return 1;
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
-                            exit(0);
+                            return 0;
                         }
                         else if(strcmp(optarg, "simple-pattern") == 0) {
                             if(optind + 2 > argc) {
@@ -669,24 +763,25 @@ int main(int argc, char **argv) {
                                         "   -W simple-pattern '!/path/*/*.ext /path/*.ext' '/path/test.ext'\n"
                                         "\n"
                                 );
-                                exit(1);
+                                return 1;
                             }
 
                             const char *heystack = argv[optind];
                             const char *needle = argv[optind + 1];
+                            size_t len = strlen(needle) + 1;
+                            char wildcarded[len];
 
-                            SIMPLE_PATTERN *p = simple_pattern_create(heystack
-                                                                      , SIMPLE_PATTERN_EXACT);
-                            int ret = simple_pattern_matches(p, needle);
+                            SIMPLE_PATTERN *p = simple_pattern_create(heystack, NULL, SIMPLE_PATTERN_EXACT);
+                            int ret = simple_pattern_matches_extract(p, needle, wildcarded, len);
                             simple_pattern_free(p);
 
                             if(ret) {
-                                fprintf(stdout, "RESULT: MATCHED - pattern '%s' matches '%s'\n", heystack, needle);
-                                exit(0);
+                                fprintf(stdout, "RESULT: MATCHED - pattern '%s' matches '%s', wildcarded '%s'\n", heystack, needle, wildcarded);
+                                return 0;
                             }
                             else {
-                                fprintf(stdout, "RESULT: NOT MATCHED - pattern '%s' does not match '%s'\n", heystack, needle);
-                                exit(1);
+                                fprintf(stdout, "RESULT: NOT MATCHED - pattern '%s' does not match '%s', wildcarded '%s'\n", heystack, needle, wildcarded);
+                                return 1;
                             }
                         }
                         else if(strncmp(optarg, stacksize_string, strlen(stacksize_string)) == 0) {
@@ -712,7 +807,7 @@ int main(int argc, char **argv) {
                                         " parameters."
                                         "\n"
                                 );
-                                exit(1);
+                                return 1;
                             }
                             const char *section = argv[optind];
                             const char *key = argv[optind + 1];
@@ -737,7 +832,7 @@ int main(int argc, char **argv) {
                                         " -c netdata.conf has to be given before -W get.\n"
                                         "\n"
                                 );
-                                exit(1);
+                                return 1;
                             }
 
                             if(!config_loaded) {
@@ -753,18 +848,18 @@ int main(int argc, char **argv) {
                             const char *def = argv[optind + 2];
                             const char *value = config_get(section, key, def);
                             printf("%s\n", value);
-                            exit(0);
+                            return 0;
                         }
                         else {
                             fprintf(stderr, "Unknown -W parameter '%s'\n", optarg);
-                            help(1);
+                            return help(1);
                         }
                     }
                     break;
+
                 default: /* ? */
                     fprintf(stderr, "Unknown parameter '%c'\n", opt);
-                    help(1);
-                    break;
+                    return help(1);
             }
         }
     }
@@ -851,63 +946,13 @@ int main(int argc, char **argv) {
 
         // block signals while initializing threads.
         // this causes the threads to block signals.
-        sigset_t sigset;
-        sigfillset(&sigset);
-        if(pthread_sigmask(SIG_BLOCK, &sigset, NULL) == -1)
-            error("Could not block signals for threads");
+        signals_block();
 
-        // Catch signals which we want to use
-        struct sigaction sa;
-        sa.sa_flags = 0;
+        // setup the signals we want to use
+        signals_init();
 
-        // ingore all signals while we run in a signal handler
-        sigfillset(&sa.sa_mask);
-
-        // INFO: If we add signals here we have to unblock them
-        // at popen.c when running a external plugin.
-
-        // Ignore SIGPIPE completely.
-        sa.sa_handler = SIG_IGN;
-        if(sigaction(SIGPIPE, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGPIPE");
-
-        sa.sa_handler = sig_handler_exit;
-        if(sigaction(SIGINT, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGINT");
-
-        sa.sa_handler = sig_handler_exit;
-        if(sigaction(SIGTERM, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGTERM");
-
-        sa.sa_handler = sig_handler_logrotate;
-        if(sigaction(SIGHUP, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGHUP");
-
-        // save database on SIGUSR1
-        sa.sa_handler = sig_handler_save;
-        if(sigaction(SIGUSR1, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGUSR1");
-
-        // reload health configuration on SIGUSR2
-        sa.sa_handler = sig_handler_reload_health;
-        if(sigaction(SIGUSR2, &sa, NULL) == -1)
-            error("Failed to change signal handler for SIGUSR2");
-
-
-        // --------------------------------------------------------------------
-        // get the required stack size of the threads of netdata
-
-        i = pthread_attr_init(&attr);
-        if(i != 0)
-            fatal("pthread_attr_init() failed with code %d.", i);
-
-        i = pthread_attr_getstacksize(&attr, &stacksize);
-        if(i != 0)
-            fatal("pthread_attr_getstacksize() failed with code %d.", i);
-        else
-            debug(D_OPTIONS, "initial pthread stack size is %zu bytes", stacksize);
-
-        wanted_stacksize = (size_t)config_get_number(CONFIG_SECTION_GLOBAL, "pthread stack size", (long)stacksize);
+        // setup threads configs
+        default_stacksize = netdata_threads_init();
 
 
         // --------------------------------------------------------------------
@@ -936,14 +981,10 @@ int main(int argc, char **argv) {
             user = config_get(CONFIG_SECTION_GLOBAL, "run as user", (passwd && passwd->pw_name)?passwd->pw_name:"");
         }
 
-        // IMPORTANT: these have to run once, while single threaded
-        web_files_uid(); // IMPORTANT: web_files_uid() before web_files_gid()
-        web_files_gid();
-
-
         // --------------------------------------------------------------------
         // create the listening sockets
 
+        web_client_api_v1_init();
         web_server_threading_selection();
 
         if(web_server_mode != WEB_SERVER_MODE_NONE)
@@ -971,18 +1012,12 @@ int main(int argc, char **argv) {
 
     info("netdata started on pid %d.", getpid());
 
+    // IMPORTANT: these have to run once, while single threaded
+    // but after we have switched user
+    web_files_uid();
+    web_files_gid();
 
-    // ------------------------------------------------------------------------
-    // set default pthread stack size - after we have forked
-
-    if(stacksize < wanted_stacksize) {
-        i = pthread_attr_setstacksize(&attr, wanted_stacksize);
-        if(i != 0)
-            fatal("pthread_attr_setstacksize() to %zu bytes, failed with code %d.", wanted_stacksize, i);
-        else
-            debug(D_SYSTEM, "Successfully set pthread stacksize to %zu bytes", wanted_stacksize);
-    }
-
+    netdata_threads_init_after_fork((size_t)config_get_number(CONFIG_SECTION_GLOBAL, "pthread stack size", (long)default_stacksize));
 
     // ------------------------------------------------------------------------
     // initialize rrd, registry, health, rrdpush, etc.
@@ -1005,15 +1040,9 @@ int main(int argc, char **argv) {
         struct netdata_static_thread *st = &static_threads[i];
 
         if(st->enabled) {
-            st->thread = mallocz(sizeof(pthread_t));
-
+            st->thread = mallocz(sizeof(netdata_thread_t));
             debug(D_SYSTEM, "Starting thread %s.", st->name);
-
-            if(pthread_create(st->thread, &attr, st->start_routine, st))
-                error("failed to create new thread for %s.", st->name);
-
-            else if(pthread_detach(*st->thread))
-                error("Cannot request detach of newly created %s thread.", st->name);
+            netdata_thread_create(st->thread, st->name, NETDATA_THREAD_OPTION_DEFAULT, st->start_routine, st);
         }
         else debug(D_SYSTEM, "Not starting thread %s.", st->name);
     }
@@ -1022,21 +1051,16 @@ int main(int argc, char **argv) {
 
 
     // ------------------------------------------------------------------------
-    // block signals while initializing threads.
-    sigset_t sigset;
-    sigfillset(&sigset);
+    // unblock signals
 
-    if(pthread_sigmask(SIG_UNBLOCK, &sigset, NULL) == -1) {
-        error("Could not unblock signals for threads");
-    }
+    signals_unblock();
 
-    // Handle flags set in the signal handler.
-    while(1) {
-        pause();
-        if(netdata_exit) {
-            debug(D_EXIT, "Exit main loop of netdata.");
-            netdata_cleanup_and_exit(0);
-            exit(0);
-        }
-    }
+    // ------------------------------------------------------------------------
+    // Handle signals
+
+    signals_handle();
+
+    // should never reach this point
+    // but we need it for rpmlint #2752
+    return 1;
 }

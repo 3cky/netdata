@@ -3,12 +3,11 @@
 # -----------------------------------------------------------------------------
 
 # allow running the jobs by hand
+[ -z "${NETDATA_BUILD_WITH_DEBUG}" ] && export NETDATA_BUILD_WITH_DEBUG=0
 [ -z "${NETDATA_INSTALL_PATH}" ] && export NETDATA_INSTALL_PATH="${1-/opt/netdata}"
 [ -z "${NETDATA_MAKESELF_PATH}" ] && export NETDATA_MAKESELF_PATH="$(dirname "${0}")/.."
 [ "${NETDATA_MAKESELF_PATH:0:1}" != "/" ] && export NETDATA_MAKESELF_PATH="$(pwd)/${NETDATA_MAKESELF_PATH}"
 [ -z "${NETDATA_SOURCE_PATH}" ] && export NETDATA_SOURCE_PATH="${NETDATA_MAKESELF_PATH}/.."
-[ -z "${PROCESSORS}" ] && export PROCESSORS=$(cat /proc/cpuinfo 2>/dev/null | grep ^processor | wc -l)
-[ -z "${PROCESSORS}" -o $((PROCESSORS)) -lt 1 ] && export PROCESSORS=1
 export NULL=
 
 # make sure the path does not end with /
@@ -20,14 +19,7 @@ fi
 # find the parent directory
 export NETDATA_INSTALL_PARENT="$(dirname "${NETDATA_INSTALL_PATH}")"
 
-
-# debug
-echo "ME=${0}"
-echo "NETDATA_INSTALL_PARENT=${NETDATA_INSTALL_PARENT}"
-echo "NETDATA_INSTALL_PATH=${NETDATA_INSTALL_PATH}"
-echo "NETDATA_MAKESELF_PATH=${NETDATA_MAKESELF_PATH}"
-echo "NETDATA_SOURCE_PATH=${NETDATA_SOURCE_PATH}"
-echo "PROCESSORS=${PROCESSORS}"
+# -----------------------------------------------------------------------------
 
 # bash strict mode
 set -euo pipefail
@@ -57,3 +49,13 @@ fetch() {
 
 # load the functions of the netdata-installer.sh
 . "${NETDATA_SOURCE_PATH}/installer/functions.sh"
+
+# -----------------------------------------------------------------------------
+
+# debug
+echo "ME=${0}"
+echo "NETDATA_INSTALL_PARENT=${NETDATA_INSTALL_PARENT}"
+echo "NETDATA_INSTALL_PATH=${NETDATA_INSTALL_PATH}"
+echo "NETDATA_MAKESELF_PATH=${NETDATA_MAKESELF_PATH}"
+echo "NETDATA_SOURCE_PATH=${NETDATA_SOURCE_PATH}"
+echo "PROCESSORS=${SYSTEM_CPUS}"

@@ -21,6 +21,7 @@ dist_web_DATA = \
 	netdata-swagger.yaml \
 	netdata-swagger.json \
 	robots.txt \
+	refresh-badges.js \
 	registry.html \
 	sitemap.xml \
 	tv.html \
@@ -41,20 +42,26 @@ dist_webold_DATA = \
 weblibdir=$(webdir)/lib
 dist_weblib_DATA = \
 	lib/bootstrap-3.3.7.min.js \
+	lib/bootstrap-slider-10.0.0.min.js \
 	lib/bootstrap-table-1.11.0.min.js \
 	lib/bootstrap-table-export-1.11.0.min.js \
 	lib/bootstrap-toggle-2.2.2.min.js \
-	lib/c3-0.4.11.min.js \
-	lib/d3-3.5.17.min.js \
-	lib/dygraph-combined-dd74404.js \
-	lib/dygraph-smooth-plotter-dd74404.js \
+	lib/clipboard-polyfill-be05dad.js \
+	lib/c3-0.4.18.min.js \
+	lib/d3-4.12.2.min.js \
+	lib/d3pie-0.2.1-netdata-3.js \
+	lib/dygraph-c91c859.min.js \
+	lib/dygraph-smooth-plotter-c91c859.js \
+	lib/fontawesome-all-5.0.1.min.js \
 	lib/gauge-1.3.2.min.js \
 	lib/jquery-2.2.4.min.js \
 	lib/jquery.easypiechart-97b5824.min.js \
-	lib/perfect-scrollbar-0.6.15.min.js \
 	lib/jquery.peity-3.2.0.min.js \
 	lib/jquery.sparkline-2.1.2.min.js \
+	lib/lz-string-1.4.4.min.js \
 	lib/morris-0.5.1.min.js \
+	lib/pako-1.0.6.min.js \
+	lib/perfect-scrollbar-0.6.15.min.js \
 	lib/raphael-2.2.4-min.js \
 	lib/tableExport-1.6.0.min.js \
 	$(NULL)
@@ -65,9 +72,9 @@ dist_webcss_DATA = \
 	css/bootstrap-3.3.7.css \
 	css/bootstrap-theme-3.3.7.min.css \
 	css/bootstrap-slate-flat-3.3.7.css \
+	css/bootstrap-slider-10.0.0.min.css \
 	css/bootstrap-toggle-2.2.2.min.css \
-	css/font-awesome.min.css \
-	css/c3-0.4.11.min.css \
+	css/c3-0.4.18.min.css \
 	$(NULL)
 
 webfontsdir=$(webdir)/fonts
@@ -77,12 +84,6 @@ dist_webfonts_DATA = \
 	fonts/glyphicons-halflings-regular.ttf \
 	fonts/glyphicons-halflings-regular.woff \
 	fonts/glyphicons-halflings-regular.woff2 \
-	fonts/FontAwesome.otf \
-	fonts/fontawesome-webfont.eot \
-	fonts/fontawesome-webfont.svg \
-	fonts/fontawesome-webfont.ttf \
-	fonts/fontawesome-webfont.woff \
-	fonts/fontawesome-webfont.woff2 \
 	$(NULL)
 
 webimagesdir=$(webdir)/images

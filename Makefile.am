@@ -18,6 +18,7 @@ MAINTAINERCLEANFILES= \
 
 EXTRA_DIST = \
 	.gitignore \
+	.codacy.yml \
 	.codeclimate.yml \
 	.csslintrc \
 	.eslintignore \
@@ -42,12 +43,13 @@ EXTRA_DIST = \
 	LICENSE-REDISTRIBUTED.md \
 	COPYING \
 	autogen.sh \
-	tests/stress.sh \
 	$(NULL)
 
 SUBDIRS = \
 	charts.d \
 	conf.d \
+	diagrams \
+	makeself \
 	node.d \
 	plugins.d \
 	python.d \
@@ -55,45 +57,28 @@ SUBDIRS = \
 	system \
 	web \
 	contrib \
+	tests \
 	$(NULL)
 
 dist_noinst_DATA= \
-	diagrams/config.puml \
-	diagrams/registry.puml \
-	diagrams/netdata-for-ephemeral-nodes.xml \
-	diagrams/netdata-proxies-example.xml \
-	diagrams/netdata-overview.xml \
+	cppcheck.sh \
 	configs.signatures \
 	Dockerfile \
+	Dockerfile.alpine \
+	Dockerfile.aarch64 \
+	Dockerfile.armv7hf \
+	netdata.cppcheck \
 	netdata.spec \
+	package.json \
 	$(NULL)
 
 # until integrated within build
 # should be proper init.d/openrc/systemd usable
 dist_noinst_SCRIPTS= \
-	diagrams/build.sh \
 	coverity-scan.sh \
 	docker-build.sh \
 	kickstart.sh \
 	kickstart-static64.sh \
 	netdata-installer.sh \
 	installer/functions.sh \
-	makeself/build.sh \
-	makeself/makeself.sh \
-	makeself/makeself-license.txt \
-	makeself/setup-x86_64-static.sh \
-	makeself/post-installer.sh \
-	makeself/jobs/10-prepare-destination.install.sh \
-	makeself/jobs/50-curl-7.53.1.install.sh \
-	makeself/jobs/50-bash-4.4.install.sh \
-	makeself/jobs/50-fping-4.0.install.sh \
-	makeself/jobs/70-netdata-git.install.sh \
-	makeself/jobs/99-makeself.install.sh \
-	makeself/run-all-jobs.sh \
-	makeself/install-or-update.sh \
-	makeself/build-x86_64-static.sh \
-	makeself/makeself-header.sh \
-	makeself/makeself-help-header.txt \
-	makeself/makeself.lsm \
-	makeself/functions.sh \
 	$(NULL)

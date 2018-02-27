@@ -302,6 +302,8 @@ static void nfstat_send_metrics() {
                     , NULL
                     , "Connection Tracker New Connections"
                     , "connections/s"
+                    , "nfacct"
+                    , NULL
                     , 3001
                     , nfstat_root.update_every
                     , RRDSET_TYPE_LINE
@@ -336,6 +338,8 @@ static void nfstat_send_metrics() {
                     , NULL
                     , "Connection Tracker Changes"
                     , "changes/s"
+                    , "nfacct"
+                    , NULL
                     , 3002
                     , nfstat_root.update_every
                     , RRDSET_TYPE_LINE
@@ -371,6 +375,8 @@ static void nfstat_send_metrics() {
                     , NULL
                     , "Connection Tracker Searches"
                     , "searches/s"
+                    , "nfacct"
+                    , NULL
                     , 3010
                     , nfstat_root.update_every
                     , RRDSET_TYPE_LINE
@@ -406,6 +412,8 @@ static void nfstat_send_metrics() {
                     , NULL
                     , "Connection Tracker Errors"
                     , "events/s"
+                    , "nfacct"
+                    , NULL
                     , 3005
                     , nfstat_root.update_every
                     , RRDSET_TYPE_LINE
@@ -443,6 +451,8 @@ static void nfstat_send_metrics() {
                     , NULL
                     , "Connection Tracker Expectations"
                     , "expectations/s"
+                    , "nfacct"
+                    , NULL
                     , 3003
                     , nfstat_root.update_every
                     , RRDSET_TYPE_LINE
@@ -661,6 +671,8 @@ static void nfacct_send_metrics() {
                 , NULL
                 , "Netfilter Accounting Packets"
                 , "packets/s"
+                , "nfacct"
+                , NULL
                 , 3206
                 , nfacct_root.update_every
                 , RRDSET_TYPE_STACKED
@@ -702,6 +714,8 @@ static void nfacct_send_metrics() {
                 , NULL
                 , "Netfilter Accounting Bandwidth"
                 , "kilobytes/s"
+                , "nfacct"
+                , NULL
                 , 3207
                 , nfacct_root.update_every
                 , RRDSET_TYPE_STACKED
@@ -737,17 +751,24 @@ static void nfacct_send_metrics() {
 
 // ----------------------------------------------------------------------------
 
-void *nfacct_main(void *ptr) {
+static void nfacct_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
+    info("cleaning up...");
 
-    info("NETFILTER thread created with task id %d", gettid());
+#ifdef DO_NFACCT
+    nfacct_cleanup();
+#endif
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("NETFILTER: Cannot set pthread cancel type to DEFERRED.");
+#ifdef DO_NFSTAT
+    nfstat_cleanup();
+#endif
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("NETFILTER: Cannot set pthread cancel state to ENABLE.");
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
 
+void *nfacct_main(void *ptr) {
+    netdata_thread_cleanup_push(nfacct_main_cleanup, ptr);
 
     int update_every = (int)config_get_number("plugin:netfilter", "update every", localhost->rrd_update_every);
     if(update_every < localhost->rrd_update_every)
@@ -791,18 +812,7 @@ void *nfacct_main(void *ptr) {
 #endif
     }
 
-    info("NETFILTER thread exiting");
-
-#ifdef DO_NFACCT
-    nfacct_cleanup();
-#endif
-
-#ifdef DO_NFSTAT
-    nfstat_cleanup();
-#endif
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }
 

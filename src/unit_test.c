@@ -1,5 +1,98 @@
 #include "common.h"
 
+static int check_number_printing(void) {
+    struct {
+        calculated_number n;
+        const char *correct;
+    } values[] = {
+            { .n = 0, .correct = "0" },
+            { .n = 0.0000001,   .correct = "0.0000001" },
+            { .n = 0.00000009,  .correct = "0.0000001" },
+            { .n = 0.000000001, .correct = "0" },
+            { .n = 99.99999999999999999, .correct = "100" },
+            { .n = -99.99999999999999999, .correct = "-100" },
+            { .n = 123.4567890123456789, .correct = "123.456789" },
+            { .n = 9999.9999999, .correct = "9999.9999999" },
+            { .n = -9999.9999999, .correct = "-9999.9999999" },
+            { .n = 0, .correct = NULL },
+    };
+
+    char netdata[50], system[50];
+    int i, failed = 0;
+    for(i = 0; values[i].correct ; i++) {
+        print_calculated_number(netdata, values[i].n);
+        snprintfz(system, 49, "%0.12" LONG_DOUBLE_MODIFIER, (LONG_DOUBLE)values[i].n);
+
+        int ok = 1;
+        if(strcmp(netdata, values[i].correct) != 0) {
+            ok = 0;
+            failed++;
+        }
+
+        fprintf(stderr, "'%s' (system) printed as '%s' (netdata): %s\n", system, netdata, ok?"OK":"FAILED");
+    }
+
+    if(failed) return 1;
+    return 0;
+}
+
+static int check_rrdcalc_comparisons(void) {
+    RRDCALC_STATUS a, b;
+
+    // make sure calloc() sets the status to UNINITIALIZED
+    memset(&a, 0, sizeof(RRDCALC_STATUS));
+    if(a != RRDCALC_STATUS_UNINITIALIZED) {
+        fprintf(stderr, "%s is not zero.\n", rrdcalc_status2string(RRDCALC_STATUS_UNINITIALIZED));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_REMOVED;
+    b = RRDCALC_STATUS_UNDEFINED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_UNDEFINED;
+    b = RRDCALC_STATUS_UNINITIALIZED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_UNINITIALIZED;
+    b = RRDCALC_STATUS_CLEAR;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_CLEAR;
+    b = RRDCALC_STATUS_RAISED;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_RAISED;
+    b = RRDCALC_STATUS_WARNING;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    a = RRDCALC_STATUS_WARNING;
+    b = RRDCALC_STATUS_CRITICAL;
+    if(!(a < b)) {
+        fprintf(stderr, "%s is not less than %s\n", rrdcalc_status2string(a), rrdcalc_status2string(b));
+        return 1;
+    }
+
+    fprintf(stderr, "RRDCALC_STATUSes are sortable.\n");
+
+    return 0;
+}
+
 int check_storage_number(calculated_number n, int debug) {
     char buffer[100];
     uint32_t flags = SN_EXISTS;
@@ -31,18 +124,31 @@ int check_storage_number(calculated_number n, int debug) {
             CALCULATED_NUMBER_FORMAT " re-parsed from printed (diff " CALCULATED_NUMBER_FORMAT ", " CALCULATED_NUMBER_FORMAT "%%)\n\n",
             n,
             d, s, ddiff, dcdiff,
-            buffer,
-            len, p, pdiff, pcdiff
+            buffer, len,
+            p, pdiff, pcdiff
         );
         if(len != strlen(buffer)) fprintf(stderr, "ERROR: printed number %s is reported to have length %zu but it has %zu\n", buffer, len, strlen(buffer));
-        if(dcdiff > ACCURACY_LOSS) fprintf(stderr, "WARNING: packing number " CALCULATED_NUMBER_FORMAT " has accuracy loss %0.7Lf %%\n", n, dcdiff);
-        if(pcdiff > ACCURACY_LOSS) fprintf(stderr, "WARNING: re-parsing the packed, unpacked and printed number " CALCULATED_NUMBER_FORMAT " has accuracy loss %0.7Lf %%\n", n, pcdiff);
+        if(dcdiff > ACCURACY_LOSS) fprintf(stderr, "WARNING: packing number " CALCULATED_NUMBER_FORMAT " has accuracy loss " CALCULATED_NUMBER_FORMAT " %%\n", n, dcdiff);
+        if(pcdiff > ACCURACY_LOSS) fprintf(stderr, "WARNING: re-parsing the packed, unpacked and printed number " CALCULATED_NUMBER_FORMAT " has accuracy loss " CALCULATED_NUMBER_FORMAT " %%\n", n, pcdiff);
     }
 
     if(len != strlen(buffer)) return 1;
     if(dcdiff > ACCURACY_LOSS) return 3;
     if(pcdiff > ACCURACY_LOSS) return 4;
     return 0;
+}
+
+calculated_number storage_number_min(calculated_number n) {
+    calculated_number r = 1, last;
+
+    do {
+        last = n;
+        n /= 2.0;
+        storage_number t = pack_storage_number(n, SN_EXISTS);
+        r = unpack_storage_number(t);
+    } while(r != 0.0 && r != last);
+
+    return last;
 }
 
 void benchmark_storage_number(int loop, int multiplier) {
@@ -66,17 +172,17 @@ void benchmark_storage_number(int loop, int multiplier) {
     their = (calculated_number)sizeof(calculated_number) * (calculated_number)loop;
 
     if(mine > their) {
-        fprintf(stderr, "\nNETDATA NEEDS %0.2Lf TIMES MORE MEMORY. Sorry!\n", (long double)(mine / their));
+        fprintf(stderr, "\nNETDATA NEEDS %0.2" LONG_DOUBLE_MODIFIER " TIMES MORE MEMORY. Sorry!\n", (LONG_DOUBLE)(mine / their));
     }
     else {
-        fprintf(stderr, "\nNETDATA INTERNAL FLOATING POINT ARITHMETICS NEEDS %0.2Lf TIMES LESS MEMORY.\n", (long double)(their / mine));
+        fprintf(stderr, "\nNETDATA INTERNAL FLOATING POINT ARITHMETICS NEEDS %0.2" LONG_DOUBLE_MODIFIER " TIMES LESS MEMORY.\n", (LONG_DOUBLE)(their / mine));
     }
 
     fprintf(stderr, "\nNETDATA FLOATING POINT\n");
-    fprintf(stderr, "MIN POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_POSITIVE_MIN);
+    fprintf(stderr, "MIN POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", storage_number_min(1));
     fprintf(stderr, "MAX POSITIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_POSITIVE_MAX);
     fprintf(stderr, "MIN NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_NEGATIVE_MIN);
-    fprintf(stderr, "MAX NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", (calculated_number)STORAGE_NUMBER_NEGATIVE_MAX);
+    fprintf(stderr, "MAX NEGATIVE VALUE " CALCULATED_NUMBER_FORMAT "\n", -storage_number_min(1));
     fprintf(stderr, "Maximum accuracy loss: " CALCULATED_NUMBER_FORMAT "%%\n\n\n", (calculated_number)ACCURACY_LOSS);
 
     // ------------------------------------------------------------------------
@@ -102,7 +208,7 @@ void benchmark_storage_number(int loop, int multiplier) {
     total  = user + system;
     mine = total;
 
-    fprintf(stderr, "user %0.5Lf, system %0.5Lf, total %0.5Lf\n", (long double)(user / 1000000.0), (long double)(system / 1000000.0), (long double)(total / 1000000.0));
+    fprintf(stderr, "user %0.5" LONG_DOUBLE_MODIFIER", system %0.5" LONG_DOUBLE_MODIFIER ", total %0.5" LONG_DOUBLE_MODIFIER "\n", (LONG_DOUBLE)(user / 1000000.0), (LONG_DOUBLE)(system / 1000000.0), (LONG_DOUBLE)(total / 1000000.0));
 
     // ------------------------------------------------------------------------
 
@@ -126,13 +232,13 @@ void benchmark_storage_number(int loop, int multiplier) {
     total  = user + system;
     their = total;
 
-    fprintf(stderr, "user %0.5Lf, system %0.5Lf, total %0.5Lf\n", (long double)(user / 1000000.0), (long double)(system / 1000000.0), (long double)(total / 1000000.0));
+    fprintf(stderr, "user %0.5" LONG_DOUBLE_MODIFIER ", system %0.5" LONG_DOUBLE_MODIFIER ", total %0.5" LONG_DOUBLE_MODIFIER "\n", (LONG_DOUBLE)(user / 1000000.0), (LONG_DOUBLE)(system / 1000000.0), (LONG_DOUBLE)(total / 1000000.0));
 
     if(mine > total) {
-        fprintf(stderr, "NETDATA CODE IS SLOWER %0.2Lf %%\n", (long double)(mine * 100.0 / their - 100.0));
+        fprintf(stderr, "NETDATA CODE IS SLOWER %0.2" LONG_DOUBLE_MODIFIER " %%\n", (LONG_DOUBLE)(mine * 100.0 / their - 100.0));
     }
     else {
-        fprintf(stderr, "NETDATA CODE IS  F A S T E R  %0.2Lf %%\n", (long double)(their * 100.0 / mine - 100.0));
+        fprintf(stderr, "NETDATA CODE IS  F A S T E R  %0.2" LONG_DOUBLE_MODIFIER " %%\n", (LONG_DOUBLE)(their * 100.0 / mine - 100.0));
     }
 
     // ------------------------------------------------------------------------
@@ -160,13 +266,13 @@ void benchmark_storage_number(int loop, int multiplier) {
     total  = user + system;
     mine = total;
 
-    fprintf(stderr, "user %0.5Lf, system %0.5Lf, total %0.5Lf\n", (long double)(user / 1000000.0), (long double)(system / 1000000.0), (long double)(total / 1000000.0));
+    fprintf(stderr, "user %0.5" LONG_DOUBLE_MODIFIER ", system %0.5" LONG_DOUBLE_MODIFIER ", total %0.5" LONG_DOUBLE_MODIFIER "\n", (LONG_DOUBLE)(user / 1000000.0), (LONG_DOUBLE)(system / 1000000.0), (LONG_DOUBLE)(total / 1000000.0));
 
     if(mine > their) {
-        fprintf(stderr, "WITH PACKING UNPACKING NETDATA CODE IS SLOWER %0.2Lf %%\n", (long double)(mine * 100.0 / their - 100.0));
+        fprintf(stderr, "WITH PACKING UNPACKING NETDATA CODE IS SLOWER %0.2" LONG_DOUBLE_MODIFIER " %%\n", (LONG_DOUBLE)(mine * 100.0 / their - 100.0));
     }
     else {
-        fprintf(stderr, "EVEN WITH PACKING AND UNPACKING, NETDATA CODE IS  F A S T E R  %0.2Lf %%\n", (long double)(their * 100.0 / mine - 100.0));
+        fprintf(stderr, "EVEN WITH PACKING AND UNPACKING, NETDATA CODE IS  F A S T E R  %0.2" LONG_DOUBLE_MODIFIER " %%\n", (LONG_DOUBLE)(their * 100.0 / mine - 100.0));
     }
 
     // ------------------------------------------------------------------------
@@ -231,30 +337,30 @@ int unit_test_storage()
 
 int unit_test_str2ld() {
     char *values[] = {
-            "1.234567", "-35.6", "0.00123", "23842384234234.2", ".1", "1.2e-10",
+            "1.2345678", "-35.6", "0.00123", "23842384234234.2", ".1", "1.2e-10",
             "hello", "1wrong", "nan", "inf", NULL
     };
 
     int i;
     for(i = 0; values[i] ; i++) {
         char *e_mine = "hello", *e_sys = "world";
-        long double mine = str2ld(values[i], &e_mine);
-        long double sys = strtold(values[i], &e_sys);
+        LONG_DOUBLE mine = str2ld(values[i], &e_mine);
+        LONG_DOUBLE sys = strtold(values[i], &e_sys);
 
         if(isnan(mine)) {
             if(!isnan(sys)) {
-                fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf.\n", values[i], mine, sys);
+                fprintf(stderr, "Value '%s' is parsed as %" LONG_DOUBLE_MODIFIER ", but system believes it is %" LONG_DOUBLE_MODIFIER ".\n", values[i], mine, sys);
                 return -1;
             }
         }
         else if(isinf(mine)) {
             if(!isinf(sys)) {
-                fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf.\n", values[i], mine, sys);
+                fprintf(stderr, "Value '%s' is parsed as %" LONG_DOUBLE_MODIFIER ", but system believes it is %" LONG_DOUBLE_MODIFIER ".\n", values[i], mine, sys);
                 return -1;
             }
         }
         else if(mine != sys && abs(mine-sys) > 0.000001) {
-            fprintf(stderr, "Value '%s' is parsed as %Lf, but system believes it is %Lf, delta %Lf.\n", values[i], mine, sys, sys-mine);
+            fprintf(stderr, "Value '%s' is parsed as %" LONG_DOUBLE_MODIFIER ", but system believes it is %" LONG_DOUBLE_MODIFIER ", delta %" LONG_DOUBLE_MODIFIER ".\n", values[i], mine, sys, sys-mine);
             return -1;
         }
 
@@ -263,9 +369,39 @@ int unit_test_str2ld() {
             return -1;
         }
 
-        fprintf(stderr, "str2ld() parsed value '%s' exactly the same way with strtold(), returned %Lf vs %Lf\n", values[i], mine, sys);
+        fprintf(stderr, "str2ld() parsed value '%s' exactly the same way with strtold(), returned %" LONG_DOUBLE_MODIFIER " vs %" LONG_DOUBLE_MODIFIER "\n", values[i], mine, sys);
     }
 
+    return 0;
+}
+
+int unit_test_buffer() {
+    BUFFER *wb = buffer_create(1);
+    char string[2048 + 1];
+    char final[9000 + 1];
+    int i;
+
+    for(i = 0; i < 2048; i++)
+        string[i] = (char)((i % 24) + 'a');
+    string[2048] = '\0';
+
+    const char *fmt = "string1: %s\nstring2: %s\nstring3: %s\nstring4: %s";
+    buffer_sprintf(wb, fmt, string, string, string, string);
+    snprintfz(final, 9000, fmt, string, string, string, string);
+
+    const char *s = buffer_tostring(wb);
+
+    if(buffer_strlen(wb) != strlen(final) || strcmp(s, final) != 0) {
+        fprintf(stderr, "\nbuffer_sprintf() is faulty.\n");
+        fprintf(stderr, "\nstring  : %s (length %zu)\n", string, strlen(string));
+        fprintf(stderr, "\nbuffer  : %s (length %zu)\n", s, buffer_strlen(wb));
+        fprintf(stderr, "\nexpected: %s (length %zu)\n", final, strlen(final));
+        buffer_free(wb);
+        return -1;
+    }
+
+    fprintf(stderr, "buffer_sprintf() works as expected.\n");
+    buffer_free(wb);
     return 0;
 }
 
@@ -923,14 +1059,14 @@ int run_test(struct test *test)
 {
     fprintf(stderr, "\nRunning test '%s':\n%s\n", test->name, test->description);
 
-    default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
+    default_rrd_memory_mode = RRD_MEMORY_MODE_ALLOC;
     default_rrd_update_every = test->update_every;
 
     char name[101];
     snprintfz(name, 100, "unittest-%s", test->name);
 
     // create the chart
-    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", 1
+    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", "unittest", NULL, 1
                                          , test->update_every, RRDSET_TYPE_LINE);
     RRDDIM *rd = rrddim_add(st, "dim1", NULL, test->multiplier, test->divisor, test->algorithm);
     
@@ -986,7 +1122,7 @@ int run_test(struct test *test)
     int errors = 0;
 
     if(st->counter != test->result_entries) {
-        fprintf(stderr, "    %s stored %lu entries, but we were expecting %lu, ### E R R O R ###\n", test->name, st->counter, test->result_entries);
+        fprintf(stderr, "    %s stored %zu entries, but we were expecting %lu, ### E R R O R ###\n", test->name, st->counter, test->result_entries);
         errors++;
     }
 
@@ -994,7 +1130,7 @@ int run_test(struct test *test)
     for(c = 0 ; c < max ; c++) {
         calculated_number v = unpack_storage_number(rd->values[c]);
         calculated_number n = test->results[c];
-        int same = (roundl(v * 10000000.0) == roundl(n * 10000000.0))?1:0;
+        int same = (calculated_number_round(v * 10000000.0) == calculated_number_round(n * 10000000.0))?1:0;
         fprintf(stderr, "    %s/%s: checking position %lu (at %lu secs), expecting value " CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", %s\n",
             test->name, rd->name, c+1,
             (rrdset_first_entry_t(st) + c * st->update_every) - time_start,
@@ -1005,7 +1141,7 @@ int run_test(struct test *test)
         if(rd2) {
             v = unpack_storage_number(rd2->values[c]);
             n = test->results2[c];
-            same = (roundl(v * 10000000.0) == roundl(n * 10000000.0))?1:0;
+            same = (calculated_number_round(v * 10000000.0) == calculated_number_round(n * 10000000.0))?1:0;
             fprintf(stderr, "    %s/%s: checking position %lu (at %lu secs), expecting value " CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", %s\n",
                 test->name, rd2->name, c+1,
                 (rrdset_first_entry_t(st) + c * st->update_every) - time_start,
@@ -1019,8 +1155,7 @@ int run_test(struct test *test)
 
 static int test_variable_renames(void) {
     fprintf(stderr, "Creating chart\n");
-    RRDSET *st = rrdset_create_localhost("chart", "ID", NULL, "family", "context", "Unit Testing", "a value", 1, 1
-                                         , RRDSET_TYPE_LINE);
+    RRDSET *st = rrdset_create_localhost("chart", "ID", NULL, "family", "context", "Unit Testing", "a value", "unittest", NULL, 1, 1, RRDSET_TYPE_LINE);
     fprintf(stderr, "Created chart with id '%s', name '%s'\n", st->id, st->name);
 
     fprintf(stderr, "Creating dimension DIM1\n");
@@ -1064,6 +1199,12 @@ static int test_variable_renames(void) {
 
 int run_all_mockup_tests(void)
 {
+    if(check_number_printing())
+        return 1;
+
+    if(check_rrdcalc_comparisons())
+        return 1;
+
     if(!test_variable_renames())
         return 1;
 
@@ -1132,7 +1273,7 @@ int unit_test(long delay, long shift)
     snprintfz(name, 100, "unittest-%d-%ld-%ld", repeat, delay, shift);
 
     //debug_flags = 0xffffffff;
-    default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
+    default_rrd_memory_mode = RRD_MEMORY_MODE_ALLOC;
     default_rrd_update_every = 1;
 
     int do_abs = 1;
@@ -1140,7 +1281,7 @@ int unit_test(long delay, long shift)
     int do_abst = 0;
     int do_absi = 0;
 
-    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", 1, 1
+    RRDSET *st = rrdset_create_localhost("netdata", name, name, "netdata", NULL, "Unit Testing", "a value", "unittest", NULL, 1, 1
                                          , RRDSET_TYPE_LINE);
     rrdset_flag_set(st, RRDSET_FLAG_DEBUG);
 

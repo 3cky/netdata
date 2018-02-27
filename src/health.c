@@ -34,10 +34,10 @@ void health_reload_host(RRDHOST *host) {
     rrdhost_wrlock(host);
 
     while(host->templates)
-        rrdcalctemplate_free(host, host->templates);
+        rrdcalctemplate_unlink_and_free(host, host->templates);
 
     while(host->alarms)
-        rrdcalc_free(host, host->alarms);
+        rrdcalc_unlink_and_free(host, host->alarms);
 
     rrdhost_unlock(host);
 
@@ -84,7 +84,7 @@ void health_reload(void) {
 // ----------------------------------------------------------------------------
 // health main thread and friends
 
-static inline int rrdcalc_value2status(calculated_number n) {
+static inline RRDCALC_STATUS rrdcalc_value2status(calculated_number n) {
     if(isnan(n) || isinf(n)) return RRDCALC_STATUS_UNDEFINED;
     if(n) return RRDCALC_STATUS_RAISED;
     return RRDCALC_STATUS_CLEAR;
@@ -145,7 +145,7 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
     const char *exec      = (ae->exec)      ? ae->exec      : host->health_default_exec;
     const char *recipient = (ae->recipient) ? ae->recipient : host->health_default_recipient;
 
-    snprintfz(command_to_run, ALARM_EXEC_COMMAND_LENGTH, "exec %s '%s' '%s' '%u' '%u' '%u' '%lu' '%s' '%s' '%s' '%s' '%s' '%0.0Lf' '%0.0Lf' '%s' '%u' '%u' '%s' '%s' '%s' '%s'",
+    snprintfz(command_to_run, ALARM_EXEC_COMMAND_LENGTH, "exec %s '%s' '%s' '%u' '%u' '%u' '%lu' '%s' '%s' '%s' '%s' '%s' '" CALCULATED_NUMBER_FORMAT_ZERO "' '" CALCULATED_NUMBER_FORMAT_ZERO "' '%s' '%u' '%u' '%s' '%s' '%s' '%s'",
               exec,
               recipient,
               host->registry_hostname,
@@ -189,11 +189,10 @@ static inline void health_alarm_execute(RRDHOST *host, ALARM_ENTRY *ae) {
 
 done:
     health_alarm_log_save(host, ae);
-    return;
 }
 
 static inline void health_process_notifications(RRDHOST *host, ALARM_ENTRY *ae) {
-    debug(D_HEALTH, "Health alarm '%s.%s' = %0.2Lf - changed status from %s to %s",
+    debug(D_HEALTH, "Health alarm '%s.%s' = " CALCULATED_NUMBER_FORMAT_AUTO " - changed status from %s to %s",
          ae->chart?ae->chart:"NOCHART", ae->name,
          ae->new_value,
          rrdcalc_status2string(ae->old_status),
@@ -204,14 +203,13 @@ static inline void health_process_notifications(RRDHOST *host, ALARM_ENTRY *ae) 
 }
 
 static inline void health_alarm_log_process(RRDHOST *host) {
-    static uint32_t stop_at_id = 0;
     uint32_t first_waiting = (host->health_log.alarms)?host->health_log.alarms->unique_id:0;
     time_t now = now_realtime_sec();
 
     netdata_rwlock_rdlock(&host->health_log.alarm_log_rwlock);
 
     ALARM_ENTRY *ae;
-    for(ae = host->health_log.alarms; ae && ae->unique_id >= stop_at_id ; ae = ae->next) {
+    for(ae = host->health_log.alarms; ae && ae->unique_id >= host->health_last_processed_id ; ae = ae->next) {
         if(unlikely(
             !(ae->flags & HEALTH_ENTRY_FLAG_PROCESSED) &&
             !(ae->flags & HEALTH_ENTRY_FLAG_UPDATED)
@@ -226,7 +224,7 @@ static inline void health_alarm_log_process(RRDHOST *host) {
     }
 
     // remember this for the next iteration
-    stop_at_id = first_waiting;
+    host->health_last_processed_id = first_waiting;
 
     netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
 
@@ -323,54 +321,58 @@ static inline int rrdcalc_isrunnable(RRDCALC *rc, time_t now, time_t *next_run) 
     return 1;
 }
 
-void *health_main(void *ptr) {
+static inline int check_if_resumed_from_suspention(void) {
+    static usec_t last_realtime = 0, last_monotonic = 0;
+    usec_t realtime = now_realtime_usec(), monotonic = now_monotonic_usec();
+    int ret = 0;
+
+    // detect if monotonic and realtime have twice the difference
+    // in which case we assume the system was just waken from hibernation
+
+    if(last_realtime && last_monotonic && realtime - last_realtime > 2 * (monotonic - last_monotonic))
+        ret = 1;
+
+    last_realtime = realtime;
+    last_monotonic = monotonic;
+
+    return ret;
+}
+
+static void health_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("HEALTH thread created with task id %d", gettid());
+    info("cleaning up...");
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("Cannot set pthread cancel type to DEFERRED.");
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("Cannot set pthread cancel state to ENABLE.");
+void *health_main(void *ptr) {
+    BUFFER *wb = buffer_create(100);
+    netdata_thread_cleanup_push(health_main_cleanup, ptr);
 
     int min_run_every = (int)config_get_number(CONFIG_SECTION_HEALTH, "run at least every seconds", 10);
     if(min_run_every < 1) min_run_every = 1;
 
-    BUFFER *wb = buffer_create(100);
-
-    time_t now               = now_realtime_sec();
-    time_t now_boottime      = now_boottime_sec();
-    time_t last_now          = now;
-    time_t last_now_boottime = now_boottime;
-    time_t hibernation_delay = config_get_number(CONFIG_SECTION_HEALTH, "postpone alarms during hibernation for seconds", 60);
+    time_t now                = now_realtime_sec();
+    time_t hibernation_delay  = config_get_number(CONFIG_SECTION_HEALTH, "postpone alarms during hibernation for seconds", 60);
 
     unsigned int loop = 0;
     while(!netdata_exit) {
         loop++;
         debug(D_HEALTH, "Health monitoring iteration no %u started", loop);
 
-        int oldstate, runnable = 0, apply_hibernation_delay = 0;
+        int runnable = 0, apply_hibernation_delay = 0;
         time_t next_run = now + min_run_every;
         RRDCALC *rc;
 
-        // detect if boottime and realtime have twice the difference
-        // in which case we assume the system was just waken from hibernation
-        if(unlikely(now - last_now > 2 * (now_boottime - last_now_boottime))) {
+        if(unlikely(check_if_resumed_from_suspention())) {
             apply_hibernation_delay = 1;
 
-            info("Postponing alarm checks for %ld seconds, due to boottime discrepancy (realtime dt: %ld, boottime dt: %ld)."
+            info("Postponing alarm checks for %ld seconds, because it seems that the system was just resumed from suspension."
             , hibernation_delay
-            , (long)(now - last_now)
-            , (long)(now_boottime - last_now_boottime)
             );
         }
-
-        last_now = now;
-        last_now_boottime = now_boottime;
-
-        if(unlikely(pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate) != 0))
-            error("Cannot set pthread cancel state to DISABLE.");
 
         rrd_rdlock();
 
@@ -381,7 +383,7 @@ void *health_main(void *ptr) {
 
             if(unlikely(apply_hibernation_delay)) {
 
-                info("Postponing alarm checks for %ld seconds, on host '%s'."
+                info("Postponing health checks for %ld seconds, on host '%s'."
                      , hibernation_delay
                      , host->hostname
                 );
@@ -389,8 +391,13 @@ void *health_main(void *ptr) {
                 host->health_delay_up_to = now + hibernation_delay;
             }
 
-            if(unlikely(!host->health_enabled || now < host->health_delay_up_to))
-                continue;
+            if(unlikely(host->health_delay_up_to)) {
+                if(unlikely(now < host->health_delay_up_to))
+                    continue;
+
+                info("Resuming health checks on host '%s'.", host->hostname);
+                host->health_delay_up_to = 0;
+            }
 
             rrdhost_rdlock(host);
 
@@ -421,6 +428,7 @@ void *health_main(void *ptr) {
                                                   , rc->after
                                                   , rc->before
                                                   , rc->group
+                                                  , 0
                                                   , rc->options
                                                   , &rc->db_after
                                                   , &rc->db_before
@@ -526,8 +534,8 @@ void *health_main(void *ptr) {
                     if(unlikely(!(rc->rrdcalc_flags & RRDCALC_FLAG_RUNNABLE)))
                         continue;
 
-                    int warning_status  = RRDCALC_STATUS_UNDEFINED;
-                    int critical_status = RRDCALC_STATUS_UNDEFINED;
+                    RRDCALC_STATUS warning_status  = RRDCALC_STATUS_UNDEFINED;
+                    RRDCALC_STATUS critical_status = RRDCALC_STATUS_UNDEFINED;
 
                     // --------------------------------------------------------
                     // check the warning expression
@@ -594,7 +602,7 @@ void *health_main(void *ptr) {
                     // --------------------------------------------------------
                     // decide the final alarm status
 
-                    int status = RRDCALC_STATUS_UNDEFINED;
+                    RRDCALC_STATUS status = RRDCALC_STATUS_UNDEFINED;
 
                     switch(warning_status) {
                         case RRDCALC_STATUS_CLEAR:
@@ -711,9 +719,6 @@ void *health_main(void *ptr) {
 
         rrd_unlock();
 
-        if(unlikely(pthread_setcancelstate(oldstate, NULL) != 0))
-            error("Cannot set pthread cancel state to RESTORE (%d).", oldstate);
-
         if(unlikely(netdata_exit))
             break;
 
@@ -726,15 +731,10 @@ void *health_main(void *ptr) {
         else
             debug(D_HEALTH, "Health monitoring iteration no %u done. Next iteration now", loop);
 
-        now_boottime = now_boottime_sec();
-
     } // forever
 
     buffer_free(wb);
 
-    info("HEALTH thread exiting");
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }

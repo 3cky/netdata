@@ -81,6 +81,7 @@ struct tc_device {
     avl_tree classes_index;
 
     struct tc_class *classes;
+    struct tc_class *last_class;
 
     struct tc_device *next;
     struct tc_device *prev;
@@ -139,11 +140,19 @@ static inline struct tc_class *tc_class_index_find(struct tc_device *st, const c
 
 static inline void tc_class_free(struct tc_device *n, struct tc_class *c) {
     if(c == n->classes) {
-        if(c->next)
+        if(likely(c->next))
             n->classes = c->next;
         else
             n->classes = c->prev;
     }
+
+    if(c == n->last_class) {
+        if(unlikely(c->next))
+            n->last_class = c->next;
+        else
+            n->last_class = c->prev;
+    }
+
     if(c->next) c->next->prev = c->prev;
     if(c->prev) c->prev->next = c->next;
 
@@ -374,11 +383,20 @@ static inline void tc_device_commit(struct tc_device *d) {
         d->enabled_bytes = CONFIG_BOOLEAN_YES;
 
         if(unlikely(!d->st_bytes))
-            d->st_bytes = rrdset_create_localhost(RRD_TYPE_TC, d->id, d->name ? d->name : d->id
-                                                  , d->family ? d->family : d->id, RRD_TYPE_TC ".qos", "Class Usage"
-                                                  , "kilobits/s", 7000, localhost->rrd_update_every
-                                                  , d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE
-                                                                                  : RRDSET_TYPE_STACKED);
+            d->st_bytes = rrdset_create_localhost(
+                    RRD_TYPE_TC
+                    , d->id
+                    , d->name ? d->name : d->id
+                    , d->family ? d->family : d->id
+                    , RRD_TYPE_TC ".qos"
+                    , "Class Usage"
+                    , "kilobits/s"
+                    , "tc"
+                    , NULL
+                    , 7000
+                    , localhost->rrd_update_every
+                    , d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE : RRDSET_TYPE_STACKED
+            );
 
         else {
             rrdset_next(d->st_bytes);
@@ -392,7 +410,7 @@ static inline void tc_device_commit(struct tc_device *d) {
             if(unlikely(!c->render)) continue;
 
             if(unlikely(!c->rd_bytes))
-                c->rd_bytes = rrddim_add(d->st_bytes, c->id, c->name?c->name:c->id, 8, 1024, RRD_ALGORITHM_INCREMENTAL);
+                c->rd_bytes = rrddim_add(d->st_bytes, c->id, c->name?c->name:c->id, 8, BITS_IN_A_KILOBIT, RRD_ALGORITHM_INCREMENTAL);
             else if(unlikely(c->name_updated))
                 rrddim_set_name(d->st_bytes, c->rd_bytes, c->name);
 
@@ -413,10 +431,20 @@ static inline void tc_device_commit(struct tc_device *d) {
             snprintfz(id, RRD_ID_LENGTH_MAX, "%s_packets", d->id);
             snprintfz(name, RRD_ID_LENGTH_MAX, "%s_packets", d->name?d->name:d->id);
 
-            d->st_packets = rrdset_create_localhost(RRD_TYPE_TC, id, name, d->family ? d->family : d->id
-                                                    , RRD_TYPE_TC ".qos_packets", "Class Packets", "packets/s", 7010
-                                                    , localhost->rrd_update_every, d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE
-                                                                                                      : RRDSET_TYPE_STACKED);
+            d->st_packets = rrdset_create_localhost(
+                    RRD_TYPE_TC
+                    , id
+                    , name
+                    , d->family ? d->family : d->id
+                    , RRD_TYPE_TC ".qos_packets"
+                    , "Class Packets"
+                    , "packets/s"
+                    , "tc"
+                    , NULL
+                    , 7010
+                    , localhost->rrd_update_every
+                    , d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE : RRDSET_TYPE_STACKED
+            );
         }
         else {
             rrdset_next(d->st_packets);
@@ -456,11 +484,20 @@ static inline void tc_device_commit(struct tc_device *d) {
             snprintfz(id, RRD_ID_LENGTH_MAX, "%s_dropped", d->id);
             snprintfz(name, RRD_ID_LENGTH_MAX, "%s_dropped", d->name?d->name:d->id);
 
-            d->st_dropped = rrdset_create_localhost(RRD_TYPE_TC, id, name, d->family ? d->family : d->id
-                                                    , RRD_TYPE_TC ".qos_dropped", "Class Dropped Packets", "packets/s"
-                                                    , 7020, localhost->rrd_update_every
-                                                    , d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE
-                                                                                    : RRDSET_TYPE_STACKED);
+            d->st_dropped = rrdset_create_localhost(
+                    RRD_TYPE_TC
+                    , id
+                    , name
+                    , d->family ? d->family : d->id
+                    , RRD_TYPE_TC ".qos_dropped"
+                    , "Class Dropped Packets"
+                    , "packets/s"
+                    , "tc"
+                    , NULL
+                    , 7020
+                    , localhost->rrd_update_every
+                    , d->enabled_all_classes_qdiscs ? RRDSET_TYPE_LINE : RRDSET_TYPE_STACKED
+            );
         }
         else {
             rrdset_next(d->st_dropped);
@@ -500,9 +537,20 @@ static inline void tc_device_commit(struct tc_device *d) {
             snprintfz(id, RRD_ID_LENGTH_MAX, "%s_tokens", d->id);
             snprintfz(name, RRD_ID_LENGTH_MAX, "%s_tokens", d->name?d->name:d->id);
 
-            d->st_tokens = rrdset_create_localhost(RRD_TYPE_TC, id, name, d->family ? d->family : d->id
-                                                   , RRD_TYPE_TC ".qos_tokens", "Class Tokens", "tokens", 7030
-                                                   , localhost->rrd_update_every, RRDSET_TYPE_LINE);
+            d->st_tokens = rrdset_create_localhost(
+                    RRD_TYPE_TC
+                    , id
+                    , name
+                    , d->family ? d->family : d->id
+                    , RRD_TYPE_TC ".qos_tokens"
+                    , "Class Tokens"
+                    , "tokens"
+                    , "tc"
+                    , NULL
+                    , 7030
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
         }
         else {
             rrdset_next(d->st_tokens);
@@ -543,9 +591,20 @@ static inline void tc_device_commit(struct tc_device *d) {
             snprintfz(id, RRD_ID_LENGTH_MAX, "%s_ctokens", d->id);
             snprintfz(name, RRD_ID_LENGTH_MAX, "%s_ctokens", d->name?d->name:d->id);
 
-            d->st_ctokens = rrdset_create_localhost(RRD_TYPE_TC, id, name, d->family ? d->family : d->id
-                                                    , RRD_TYPE_TC ".qos_ctokens", "Class cTokens", "ctokens", 7040
-                                                    , localhost->rrd_update_every, RRDSET_TYPE_LINE);
+            d->st_ctokens = rrdset_create_localhost(
+                    RRD_TYPE_TC
+                    , id
+                    , name
+                    , d->family ? d->family : d->id
+                    , RRD_TYPE_TC ".qos_ctokens"
+                    , "Class cTokens"
+                    , "ctokens"
+                    , "tc"
+                    , NULL
+                    , 7040
+                    , localhost->rrd_update_every
+                    , RRDSET_TYPE_LINE
+            );
         }
         else {
             debug(D_TC_LOOP, "TC: Updating _ctokens chart for device '%s'", d->name?d->name:d->id);
@@ -605,7 +664,7 @@ static inline void tc_device_set_device_name(struct tc_device *d, char *name) {
         d->name = NULL;
     }
 
-    if(likely(name && *name && strcmp(d->id, name))) {
+    if(likely(name && *name && strcmp(d->id, name) != 0)) {
         debug(D_TC_LOOP, "TC: Setting device '%s' name to '%s'", d->id, name);
         d->name = strdupz(name);
         d->name_updated = 1;
@@ -663,9 +722,15 @@ static inline struct tc_class *tc_class_add(struct tc_device *n, char *id, char 
 
         c = callocz(1, sizeof(struct tc_class));
 
-        if(n->classes) n->classes->prev = c;
-        c->next = n->classes;
-        n->classes = c;
+        if(unlikely(!n->classes))
+            n->classes = c;
+
+        else if(likely(n->last_class)) {
+            n->last_class->next = c;
+            c->prev = n->last_class;
+        }
+
+        n->last_class = c;
 
         c->id = strdupz(id);
         c->hash = simple_hash(c->id);
@@ -763,20 +828,34 @@ static inline void tc_split_words(char *str, char **words, int max_words) {
     while(i < max_words) words[i++] = NULL;
 }
 
-volatile pid_t tc_child_pid = 0;
-void *tc_main(void *ptr) {
+static pid_t tc_child_pid = 0;
+
+static void tc_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("TC thread created with task id %d", gettid());
+    info("cleaning up...");
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("Cannot set pthread cancel type to DEFERRED.");
+    if(tc_child_pid) {
+        info("TC: killing with SIGTERM tc-qos-helper process %d", tc_child_pid);
+        if(killpid(tc_child_pid, SIGTERM) != -1) {
+            siginfo_t info;
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("Cannot set pthread cancel state to ENABLE.");
+            info("TC: waiting for tc plugin child process pid %d to exit...", tc_child_pid);
+            waitid(P_PID, (id_t) tc_child_pid, &info, WEXITED);
+            // info("TC: finished tc plugin child process pid %d.", tc_child_pid);
+        }
+
+        tc_child_pid = 0;
+    }
+
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
+
+void *tc_main(void *ptr) {
+    netdata_thread_cleanup_push(tc_main_cleanup, ptr);
 
     struct rusage thread;
-    RRDSET *stcpu = NULL, *sttime = NULL;
 
     char buffer[TC_LINE_MAX+1] = "";
     char *words[PLUGINSD_MAX_WORDS] = { NULL };
@@ -799,10 +878,8 @@ void *tc_main(void *ptr) {
 
     snprintfz(buffer, TC_LINE_MAX, "%s/tc-qos-helper.sh", netdata_configured_plugins_dir);
     char *tc_script = config_get("plugin:tc", "script to run to get tc values", buffer);
-    
-    for(;1;) {
-        if(unlikely(netdata_exit)) break;
 
+    while(!netdata_exit) {
         FILE *fp;
         struct tc_device *device = NULL;
         struct tc_class *class = NULL;
@@ -901,14 +978,10 @@ void *tc_main(void *ptr) {
                 // debug(D_TC_LOOP, "END line");
 
                 if(likely(device)) {
-                    if(pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL) != 0)
-                        error("Cannot set pthread cancel state to DISABLE.");
-
+                    netdata_thread_disable_cancelability();
                     tc_device_commit(device);
                     // tc_device_free(device);
-
-                    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-                        error("Cannot set pthread cancel state to ENABLE.");
+                    netdata_thread_enable_cancelability();
                 }
 
                 device = NULL;
@@ -989,30 +1062,56 @@ void *tc_main(void *ptr) {
                 // debug(D_TC_LOOP, "WORKTIME line '%s' '%s'", words[1], words[2]);
                 getrusage(RUSAGE_THREAD, &thread);
 
-                if(unlikely(!stcpu)) stcpu = rrdset_find_localhost("netdata.plugin_tc_cpu");
+                static RRDSET *stcpu = NULL;
+                static RRDDIM *rd_user = NULL, *rd_system = NULL;
+
                 if(unlikely(!stcpu)) {
-                    stcpu = rrdset_create_localhost("netdata", "plugin_tc_cpu", NULL, "tc.helper", NULL
-                                                    , "NetData TC CPU usage", "milliseconds/s", 135000, localhost->rrd_update_every
-                                                    , RRDSET_TYPE_STACKED);
-                    rrddim_add(stcpu, "user",  NULL,  1, 1000, RRD_ALGORITHM_INCREMENTAL);
-                    rrddim_add(stcpu, "system", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+                    stcpu = rrdset_create_localhost(
+                            "netdata"
+                            , "plugin_tc_cpu"
+                            , NULL
+                            , "tc.helper"
+                            , NULL
+                            , "NetData TC CPU usage"
+                            , "milliseconds/s"
+                            , "tc"
+                            , NULL
+                            , 135000
+                            , localhost->rrd_update_every
+                            , RRDSET_TYPE_STACKED
+                    );
+                    rd_user   = rrddim_add(stcpu, "user",  NULL,  1, 1000, RRD_ALGORITHM_INCREMENTAL);
+                    rd_system = rrddim_add(stcpu, "system", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
                 }
                 else rrdset_next(stcpu);
 
-                rrddim_set(stcpu, "user"  , thread.ru_utime.tv_sec * 1000000ULL + thread.ru_utime.tv_usec);
-                rrddim_set(stcpu, "system", thread.ru_stime.tv_sec * 1000000ULL + thread.ru_stime.tv_usec);
+                rrddim_set_by_pointer(stcpu, rd_user  , thread.ru_utime.tv_sec * 1000000ULL + thread.ru_utime.tv_usec);
+                rrddim_set_by_pointer(stcpu, rd_system, thread.ru_stime.tv_sec * 1000000ULL + thread.ru_stime.tv_usec);
                 rrdset_done(stcpu);
 
-                if(unlikely(!sttime)) sttime = rrdset_find_localhost("netdata.plugin_tc_time");
+                static RRDSET *sttime = NULL;
+                static RRDDIM *rd_run_time = NULL;
+
                 if(unlikely(!sttime)) {
-                    sttime = rrdset_create_localhost("netdata", "plugin_tc_time", NULL, "tc.helper", NULL
-                                                     , "NetData TC script execution", "milliseconds/run", 135001
-                                                     , localhost->rrd_update_every, RRDSET_TYPE_AREA);
-                    rrddim_add(sttime, "run_time",  "run time",  1, 1, RRD_ALGORITHM_ABSOLUTE);
+                    sttime = rrdset_create_localhost(
+                            "netdata"
+                            , "plugin_tc_time"
+                            , NULL
+                            , "tc.helper"
+                            , NULL
+                            , "NetData TC script execution"
+                            , "milliseconds/run"
+                            , "tc"
+                            , NULL
+                            , 135001
+                            , localhost->rrd_update_every
+                            , RRDSET_TYPE_AREA
+                    );
+                    rd_run_time = rrddim_add(sttime, "run_time",  "run time",  1, 1, RRD_ALGORITHM_ABSOLUTE);
                 }
                 else rrdset_next(sttime);
 
-                rrddim_set(sttime, "run_time", atoll(words[1]));
+                rrddim_set_by_pointer(sttime, rd_run_time, str2ll(words[1], NULL));
                 rrdset_done(sttime);
 
             }
@@ -1060,9 +1159,6 @@ void *tc_main(void *ptr) {
     }
 
 cleanup:
-    info("TC thread exiting");
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }

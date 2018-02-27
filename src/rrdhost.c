@@ -58,15 +58,41 @@ RRDHOST *rrdhost_find_by_hostname(const char *hostname, uint32_t hash) {
 // ----------------------------------------------------------------------------
 // RRDHOST - internal helpers
 
+static inline void rrdhost_init_tags(RRDHOST *host, const char *tags) {
+    if(host->tags && tags && !strcmp(host->tags, tags))
+        return;
+
+    void *old = (void *)host->tags;
+    host->tags = (tags && *tags)?strdupz(tags):NULL;
+    freez(old);
+}
+
 static inline void rrdhost_init_hostname(RRDHOST *host, const char *hostname) {
-    freez(host->hostname);
-    host->hostname = strdupz(hostname);
+    if(host->hostname && hostname && !strcmp(host->hostname, hostname))
+        return;
+
+    void *old = host->hostname;
+    host->hostname = strdupz(hostname?hostname:"localhost");
     host->hash_hostname = simple_hash(host->hostname);
+    freez(old);
 }
 
 static inline void rrdhost_init_os(RRDHOST *host, const char *os) {
-    freez(host->os);
+    if(host->os && os && !strcmp(host->os, os))
+        return;
+
+    void *old = (void *)host->os;
     host->os = strdupz(os?os:"unknown");
+    freez(old);
+}
+
+static inline void rrdhost_init_timezone(RRDHOST *host, const char *timezone) {
+    if(host->timezone && timezone && !strcmp(host->timezone, timezone))
+        return;
+
+    void *old = (void *)host->timezone;
+    host->timezone = strdupz((timezone && *timezone)?timezone:"unknown");
+    freez(old);
 }
 
 static inline void rrdhost_init_machine_guid(RRDHOST *host, const char *machine_guid) {
@@ -83,6 +109,8 @@ RRDHOST *rrdhost_create(const char *hostname,
                         const char *registry_hostname,
                         const char *guid,
                         const char *os,
+                        const char *timezone,
+                        const char *tags,
                         int update_every,
                         long entries,
                         RRD_MEMORY_MODE memory_mode,
@@ -102,32 +130,34 @@ RRDHOST *rrdhost_create(const char *hostname,
     host->rrd_history_entries = align_entries_to_pagesize(memory_mode, entries);
     host->rrd_memory_mode     = memory_mode;
     host->health_enabled      = (memory_mode == RRD_MEMORY_MODE_NONE)? 0 : health_enabled;
-    host->rrdpush_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key);
-    host->rrdpush_destination = (host->rrdpush_enabled)?strdupz(rrdpush_destination):NULL;
-    host->rrdpush_api_key     = (host->rrdpush_enabled)?strdupz(rrdpush_api_key):NULL;
+    host->rrdpush_send_enabled     = (rrdpush_enabled && rrdpush_destination && *rrdpush_destination && rrdpush_api_key && *rrdpush_api_key);
+    host->rrdpush_send_destination = (host->rrdpush_send_enabled)?strdupz(rrdpush_destination):NULL;
+    host->rrdpush_send_api_key     = (host->rrdpush_send_enabled)?strdupz(rrdpush_api_key):NULL;
 
-    host->rrdpush_pipe[0] = -1;
-    host->rrdpush_pipe[1] = -1;
-    host->rrdpush_socket  = -1;
+    host->rrdpush_sender_pipe[0] = -1;
+    host->rrdpush_sender_pipe[1] = -1;
+    host->rrdpush_sender_socket  = -1;
 
-    netdata_mutex_init(&host->rrdpush_mutex);
+    netdata_mutex_init(&host->rrdpush_sender_buffer_mutex);
     netdata_rwlock_init(&host->rrdhost_rwlock);
 
     rrdhost_init_hostname(host, hostname);
     rrdhost_init_machine_guid(host, guid);
     rrdhost_init_os(host, os);
+    rrdhost_init_timezone(host, timezone);
+    rrdhost_init_tags(host, tags);
     host->registry_hostname = strdupz((registry_hostname && *registry_hostname)?registry_hostname:hostname);
 
     avl_init_lock(&(host->rrdset_root_index),      rrdset_compare);
     avl_init_lock(&(host->rrdset_root_index_name), rrdset_compare_name);
     avl_init_lock(&(host->rrdfamily_root_index),   rrdfamily_compare);
-    avl_init_lock(&(host->variables_root_index),   rrdvar_compare);
+    avl_init_lock(&(host->rrdvar_root_index),   rrdvar_compare);
 
     if(config_get_boolean(CONFIG_SECTION_GLOBAL, "delete obsolete charts files", 1))
-        rrdhost_flag_set(host, RRDHOST_DELETE_OBSOLETE_FILES);
+        rrdhost_flag_set(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS);
 
     if(config_get_boolean(CONFIG_SECTION_GLOBAL, "delete orphan hosts files", 1) && !is_localhost)
-        rrdhost_flag_set(host, RRDHOST_DELETE_ORPHAN_FILES);
+        rrdhost_flag_set(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST);
 
 
     // ------------------------------------------------------------------------
@@ -232,7 +262,9 @@ RRDHOST *rrdhost_create(const char *hostname,
     }
     else {
         info("Host '%s' (at registry as '%s') with guid '%s' initialized"
-                     ", os %s"
+                     ", os '%s'"
+                     ", timezone '%s'"
+                     ", tags '%s'"
                      ", update every %d"
                      ", memory mode %s"
                      ", history entries %ld"
@@ -248,12 +280,14 @@ RRDHOST *rrdhost_create(const char *hostname,
              , host->registry_hostname
              , host->machine_guid
              , host->os
+             , host->timezone
+             , (host->tags)?host->tags:""
              , host->rrd_update_every
              , rrd_memory_mode_name(host->rrd_memory_mode)
              , host->rrd_history_entries
-             , host->rrdpush_enabled?"enabled":"disabled"
-             , host->rrdpush_destination?host->rrdpush_destination:""
-             , host->rrdpush_api_key?host->rrdpush_api_key:""
+             , host->rrdpush_send_enabled?"enabled":"disabled"
+             , host->rrdpush_send_destination?host->rrdpush_send_destination:""
+             , host->rrdpush_send_api_key?host->rrdpush_send_api_key:""
              , host->health_enabled?"enabled":"disabled"
              , host->cache_dir
              , host->varlib_dir
@@ -273,6 +307,8 @@ RRDHOST *rrdhost_find_or_create(
         , const char *registry_hostname
         , const char *guid
         , const char *os
+        , const char *timezone
+        , const char *tags
         , int update_every
         , long history
         , RRD_MEMORY_MODE mode
@@ -291,6 +327,8 @@ RRDHOST *rrdhost_find_or_create(
                 , registry_hostname
                 , guid
                 , os
+                , timezone
+                , tags
                 , update_every
                 , history
                 , mode
@@ -304,7 +342,7 @@ RRDHOST *rrdhost_find_or_create(
     else {
         host->health_enabled = health_enabled;
 
-        if(strcmp(host->hostname, hostname)) {
+        if(strcmp(host->hostname, hostname) != 0) {
             char *t = host->hostname;
             host->hostname = strdupz(hostname);
             host->hash_hostname = simple_hash(host->hostname);
@@ -312,24 +350,29 @@ RRDHOST *rrdhost_find_or_create(
         }
 
         if(host->rrd_update_every != update_every)
-            error("Host '%s' has an update frequency of %d seconds, but the wanted one is %d seconds.", host->hostname, host->rrd_update_every, update_every);
+            error("Host '%s' has an update frequency of %d seconds, but the wanted one is %d seconds. Restart netdata here to apply the new settings.", host->hostname, host->rrd_update_every, update_every);
 
         if(host->rrd_history_entries < history)
-            error("Host '%s' has history of %ld entries, but the wanted one is %ld entries.", host->hostname, host->rrd_history_entries, history);
+            error("Host '%s' has history of %ld entries, but the wanted one is %ld entries. Restart netdata here to apply the new settings.", host->hostname, host->rrd_history_entries, history);
 
         if(host->rrd_memory_mode != mode)
-            error("Host '%s' has memory mode '%s', but the wanted one is '%s'.", host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
-    }
-    rrd_unlock();
+            error("Host '%s' has memory mode '%s', but the wanted one is '%s'. Restart netdata here to apply the new settings.", host->hostname, rrd_memory_mode_name(host->rrd_memory_mode), rrd_memory_mode_name(mode));
 
-    rrdhost_cleanup_orphan(host);
+        // update host tags
+        rrdhost_init_tags(host, tags);
+    }
+
+    rrdhost_cleanup_orphan_hosts_nolock(host);
+
+    rrd_unlock();
 
     return host;
 }
 
-static inline int rrdhost_should_be_deleted(RRDHOST *host, RRDHOST *protected, time_t now) {
+inline int rrdhost_should_be_removed(RRDHOST *host, RRDHOST *protected, time_t now) {
     if(host != protected
        && host != localhost
+       && rrdhost_flag_check(host, RRDHOST_FLAG_ORPHAN)
        && !host->connected_senders
        && host->senders_disconnected_time
        && host->senders_disconnected_time + rrdhost_free_orphan_time < now)
@@ -338,29 +381,25 @@ static inline int rrdhost_should_be_deleted(RRDHOST *host, RRDHOST *protected, t
     return 0;
 }
 
-void rrdhost_cleanup_orphan(RRDHOST *protected) {
+void rrdhost_cleanup_orphan_hosts_nolock(RRDHOST *protected) {
     time_t now = now_realtime_sec();
-
-    rrd_wrlock();
 
     RRDHOST *host;
 
 restart_after_removal:
     rrdhost_foreach_write(host) {
-        if(rrdhost_should_be_deleted(host, protected, now)) {
+        if(rrdhost_should_be_removed(host, protected, now)) {
             info("Host '%s' with machine guid '%s' is obsolete - cleaning up.", host->hostname, host->machine_guid);
 
-            if(rrdset_flag_check(host, RRDHOST_ORPHAN))
-                rrdhost_delete(host);
+            if(rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST))
+                rrdhost_delete_charts(host);
             else
-                rrdhost_save(host);
+                rrdhost_save_charts(host);
 
             rrdhost_free(host);
             goto restart_after_removal;
         }
     }
-
-    rrd_unlock();
 }
 
 // ----------------------------------------------------------------------------
@@ -368,6 +407,9 @@ restart_after_removal:
 
 void rrd_init(char *hostname) {
     rrdset_free_obsolete_time = config_get_number(CONFIG_SECTION_GLOBAL, "cleanup obsolete charts after seconds", rrdset_free_obsolete_time);
+    gap_when_lost_iterations_above = (int)config_get_number(CONFIG_SECTION_GLOBAL, "gap when lost iterations above", gap_when_lost_iterations_above);
+    if(gap_when_lost_iterations_above < 1)
+        gap_when_lost_iterations_above = 1;
 
     health_init();
     registry_init();
@@ -380,6 +422,8 @@ void rrd_init(char *hostname) {
             , registry_get_this_machine_hostname()
             , registry_get_this_machine_guid()
             , os_type
+            , netdata_configured_timezone
+            , config_get(CONFIG_SECTION_BACKEND, "host tags", "")
             , default_rrd_update_every
             , default_rrd_history_entries
             , default_rrd_memory_mode
@@ -446,12 +490,19 @@ void rrdhost_free(RRDHOST *host) {
     // ------------------------------------------------------------------------
     // release its children resources
 
-    while(host->rrdset_root) rrdset_free(host->rrdset_root);
+    while(host->rrdset_root)
+        rrdset_free(host->rrdset_root);
 
-    while(host->alarms) rrdcalc_free(host, host->alarms);
-    while(host->templates) rrdcalctemplate_free(host, host->templates);
+    while(host->alarms)
+        rrdcalc_unlink_and_free(host, host->alarms);
+
+    while(host->templates)
+        rrdcalctemplate_unlink_and_free(host, host->templates);
+
+    debug(D_RRD_CALLS, "RRDHOST: Cleaning up remaining host variables for host '%s'", host->hostname);
+    rrdvar_free_remaining_variables(host, &host->rrdvar_root_index);
+
     health_alarm_log_free(host);
-
 
     // ------------------------------------------------------------------------
     // remove it from the indexes
@@ -479,11 +530,13 @@ void rrdhost_free(RRDHOST *host) {
     // ------------------------------------------------------------------------
     // free it
 
-    freez(host->os);
+    freez((void *)host->tags);
+    freez((void *)host->os);
+    freez((void *)host->timezone);
     freez(host->cache_dir);
     freez(host->varlib_dir);
-    freez(host->rrdpush_api_key);
-    freez(host->rrdpush_destination);
+    freez(host->rrdpush_send_api_key);
+    freez(host->rrdpush_send_destination);
     freez(host->health_default_exec);
     freez(host->health_default_recipient);
     freez(host->health_log_filename);
@@ -504,9 +557,9 @@ void rrdhost_free_all(void) {
 }
 
 // ----------------------------------------------------------------------------
-// RRDHOST - save
+// RRDHOST - save host files
 
-void rrdhost_save(RRDHOST *host) {
+void rrdhost_save_charts(RRDHOST *host) {
     if(!host) return;
 
     info("Saving/Closing database of host '%s'...", host->hostname);
@@ -527,9 +580,9 @@ void rrdhost_save(RRDHOST *host) {
 }
 
 // ----------------------------------------------------------------------------
-// RRDHOST - delete files
+// RRDHOST - delete host files
 
-void rrdhost_delete(RRDHOST *host) {
+void rrdhost_delete_charts(RRDHOST *host) {
     if(!host) return;
 
     info("Deleting database of host '%s'...", host->hostname);
@@ -551,6 +604,39 @@ void rrdhost_delete(RRDHOST *host) {
     rrdhost_unlock(host);
 }
 
+// ----------------------------------------------------------------------------
+// RRDHOST - cleanup host files
+
+void rrdhost_cleanup_charts(RRDHOST *host) {
+    if(!host) return;
+
+    info("Cleaning up database of host '%s'...", host->hostname);
+
+    RRDSET *st;
+    uint32_t rrdhost_delete_obsolete_charts = rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS);
+
+    // we get a write lock
+    // to ensure only one thread is saving the database
+    rrdhost_wrlock(host);
+
+    rrdset_foreach_write(st, host) {
+        rrdset_rdlock(st);
+
+        if(rrdhost_delete_obsolete_charts && rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE))
+            rrdset_delete(st);
+        else
+            rrdset_save(st);
+
+        rrdset_unlock(st);
+    }
+
+    rrdhost_unlock(host);
+}
+
+
+// ----------------------------------------------------------------------------
+// RRDHOST - save all hosts to disk
+
 void rrdhost_save_all(void) {
     info("Saving database [%zu hosts(s)]...", rrd_hosts_available);
 
@@ -558,15 +644,40 @@ void rrdhost_save_all(void) {
 
     RRDHOST *host;
     rrdhost_foreach_read(host)
-        rrdhost_save(host);
+        rrdhost_save_charts(host);
 
     rrd_unlock();
 }
 
-void rrdhost_cleanup_obsolete(RRDHOST *host) {
+// ----------------------------------------------------------------------------
+// RRDHOST - save or delete all hosts from disk
+
+void rrdhost_cleanup_all(void) {
+    info("Cleaning up database [%zu hosts(s)]...", rrd_hosts_available);
+
+    rrd_rdlock();
+
+    RRDHOST *host;
+    rrdhost_foreach_read(host) {
+        if(host != localhost && rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS) && !host->connected_senders)
+            rrdhost_delete_charts(host);
+        else
+            rrdhost_cleanup_charts(host);
+    }
+
+    rrd_unlock();
+}
+
+
+// ----------------------------------------------------------------------------
+// RRDHOST - save or delete all the host charts from disk
+
+void rrdhost_cleanup_obsolete_charts(RRDHOST *host) {
     time_t now = now_realtime_sec();
 
     RRDSET *st;
+
+    uint32_t rrdhost_delete_obsolete_charts = rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_OBSOLETE_CHARTS);
 
 restart_after_removal:
     rrdset_foreach_write(st, host) {
@@ -578,7 +689,7 @@ restart_after_removal:
 
             rrdset_rdlock(st);
 
-            if(rrdhost_flag_check(host, RRDHOST_DELETE_OBSOLETE_FILES))
+            if(rrdhost_delete_obsolete_charts)
                 rrdset_delete(st);
             else
                 rrdset_save(st);

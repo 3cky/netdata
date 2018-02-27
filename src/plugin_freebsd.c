@@ -36,6 +36,8 @@ static struct freebsd_module {
 
         // CPU metrics
         { .name = "kern.cp_times",         .dim = "cp_times",       .enabled = 1, .func = do_kern_cp_times },
+        { .name = "dev.cpu.temperature",   .dim = "cpu_temperature", .enabled = 1, .func = do_dev_cpu_temperature },
+        { .name = "dev.cpu.0.freq",        .dim = "cpu_frequency",  .enabled = 1, .func = do_dev_cpu_0_freq },
 
         // disk metrics
         { .name = "kern.devstat",          .dim = "kern_devstat",   .enabled = 1, .func = do_kern_devstat },
@@ -55,27 +57,32 @@ static struct freebsd_module {
 
         // ZFS metrics
         { .name = "kstat.zfs.misc.arcstats", .dim = "arcstats",   .enabled = 1, .func = do_kstat_zfs_misc_arcstats },
+        { .name = "kstat.zfs.misc.zio_trim", .dim = "trim",       .enabled = 1, .func = do_kstat_zfs_misc_zio_trim },
+
+        // ipfw metrics
+        { .name = "ipfw",                  .dim = "ipfw",         .enabled = 1, .func = do_ipfw },
 
         // the terminator of this array
         { .name = NULL, .dim = NULL, .enabled = 0, .func = NULL }
 };
 
-void *freebsd_main(void *ptr) {
+static void freebsd_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("FREEBSD Plugin thread created with task id %d", gettid());
+    info("cleaning up...");
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("Cannot set pthread cancel type to DEFERRED.");
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("Cannot set pthread cancel state to ENABLE.");
+void *freebsd_main(void *ptr) {
+    netdata_thread_cleanup_push(freebsd_main_cleanup, ptr);
 
     int vdo_cpu_netdata = config_get_boolean("plugin:freebsd", "netdata server resources", 1);
 
     // initialize FreeBSD plugin
     if (freebsd_plugin_init())
-        netdata_exit = 1;
+        netdata_cleanup_and_exit(1);
 
     // check the enabled status for each module
     int i;
@@ -91,7 +98,7 @@ void *freebsd_main(void *ptr) {
     heartbeat_t hb;
     heartbeat_init(&hb);
 
-    for(;;) {
+    while(!netdata_exit) {
         usec_t hb_dt = heartbeat_next(&hb, step);
         usec_t duration = 0ULL;
 
@@ -123,9 +130,20 @@ void *freebsd_main(void *ptr) {
                 st = rrdset_find_bytype_localhost("netdata", "plugin_freebsd_modules");
 
                 if(!st) {
-                    st = rrdset_create_localhost("netdata", "plugin_freebsd_modules", NULL, "freebsd", NULL
-                    , "NetData FreeBSD Plugin Modules Durations", "milliseconds/run", 132001
-                    , localhost->rrd_update_every, RRDSET_TYPE_STACKED);
+                    st = rrdset_create_localhost(
+                            "netdata"
+                            , "plugin_freebsd_modules"
+                            , NULL
+                            , "freebsd"
+                            , NULL
+                            , "NetData FreeBSD Plugin Modules Durations"
+                            , "milliseconds/run"
+                            , "netdata"
+                            , "stats"
+                            , 132001
+                            , localhost->rrd_update_every
+                            , RRDSET_TYPE_STACKED
+                    );
 
                     for(i = 0 ; freebsd_modules[i].name ;i++) {
                         struct freebsd_module *pm = &freebsd_modules[i];
@@ -150,9 +168,6 @@ void *freebsd_main(void *ptr) {
         }
     }
 
-    info("FREEBSD thread exiting");
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }

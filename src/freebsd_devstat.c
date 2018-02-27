@@ -27,10 +27,15 @@ struct disk {
     struct prev_dstat {
         collected_number bytes_read;
         collected_number bytes_write;
+        collected_number bytes_free;
         collected_number operations_read;
         collected_number operations_write;
+        collected_number operations_other;
+        collected_number operations_free;
         collected_number duration_read_ms;
         collected_number duration_write_ms;
+        collected_number duration_other_ms;
+        collected_number duration_free_ms;
         collected_number busy_time_ms;
     } prev_dstat;
 
@@ -39,10 +44,13 @@ struct disk {
     RRDSET *st_io;
     RRDDIM *rd_io_in;
     RRDDIM *rd_io_out;
+    RRDDIM *rd_io_free;
 
     RRDSET *st_ops;
     RRDDIM *rd_ops_in;
     RRDDIM *rd_ops_out;
+    RRDDIM *rd_ops_other;
+    RRDDIM *rd_ops_free;
 
     RRDSET *st_qops;
     RRDDIM *rd_qops;
@@ -53,14 +61,19 @@ struct disk {
     RRDSET *st_iotime;
     RRDDIM *rd_iotime_in;
     RRDDIM *rd_iotime_out;
+    RRDDIM *rd_iotime_other;
+    RRDDIM *rd_iotime_free;
 
     RRDSET *st_await;
     RRDDIM *rd_await_in;
     RRDDIM *rd_await_out;
+    RRDDIM *rd_await_other;
+    RRDDIM *rd_await_free;
 
     RRDSET *st_avagsz;
     RRDDIM *rd_avagsz_in;
     RRDDIM *rd_avagsz_out;
+    RRDDIM *rd_avagsz_free;
 
     RRDSET *st_svctm;
     RRDDIM *rd_svctm;
@@ -74,21 +87,21 @@ static size_t disks_added = 0, disks_found = 0;
 
 static void disk_free(struct disk *dm) {
     if (likely(dm->st_io))
-        rrdset_flag_set(dm->st_io,     RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_io);
     if (likely(dm->st_ops))
-        rrdset_flag_set(dm->st_ops,    RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_ops);
     if (likely(dm->st_qops))
-        rrdset_flag_set(dm->st_qops,   RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_qops);
     if (likely(dm->st_util))
-        rrdset_flag_set(dm->st_util,   RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_util);
     if (likely(dm->st_iotime))
-        rrdset_flag_set(dm->st_iotime, RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_iotime);
     if (likely(dm->st_await))
-        rrdset_flag_set(dm->st_await,  RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_await);
     if (likely(dm->st_avagsz))
-        rrdset_flag_set(dm->st_avagsz, RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_avagsz);
     if (likely(dm->st_svctm))
-        rrdset_flag_set(dm->st_svctm,  RRDSET_FLAG_OBSOLETE);
+        rrdset_is_obsolete(dm->st_svctm);
 
     disks_added--;
     freez(dm->name);
@@ -208,6 +221,7 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
         excluded_disks = simple_pattern_create(
                 config_get(CONFIG_SECTION_KERN_DEVSTAT, "disable by default disks matching", DELAULT_EXLUDED_DISKS)
+                , NULL
                 , SIMPLE_PATTERN_EXACT
         );
     }
@@ -244,7 +258,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                 for (i = 0; i < numdevs; i++) {
                     if (likely(do_system_io)) {
-                        if (((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_DIRECT) || ((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_STORARRAY)) {
+                        if (((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_DIRECT) ||
+                            ((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_STORARRAY)) {
                             total_disk_kbytes_read += dstat[i].bytes[DEVSTAT_READ] / KILO_FACTOR;
                             total_disk_kbytes_write += dstat[i].bytes[DEVSTAT_WRITE] / KILO_FACTOR;
                         }
@@ -254,11 +269,14 @@ int do_kern_devstat(int update_every, usec_t dt) {
                         if ((dstat[i].device_type & DEVSTAT_TYPE_PASS) == DEVSTAT_TYPE_PASS)
                             continue;
 
-                    if (((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_DIRECT) || ((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_STORARRAY)) {
+                    if (((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_DIRECT) ||
+                        ((dstat[i].device_type & DEVSTAT_TYPE_MASK) == DEVSTAT_TYPE_STORARRAY)) {
                         char disk[DEVSTAT_NAME_LEN + MAX_INT_DIGITS + 1];
                         struct cur_dstat {
                             collected_number duration_read_ms;
                             collected_number duration_write_ms;
+                            collected_number duration_other_ms;
+                            collected_number duration_free_ms;
                             collected_number busy_time_ms;
                         } cur_dstat;
 
@@ -299,12 +317,19 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                             dm->prev_dstat.bytes_read        = dstat[i].bytes[DEVSTAT_READ];
                             dm->prev_dstat.bytes_write       = dstat[i].bytes[DEVSTAT_WRITE];
+                            dm->prev_dstat.bytes_free        = dstat[i].bytes[DEVSTAT_FREE];
                             dm->prev_dstat.operations_read   = dstat[i].operations[DEVSTAT_READ];
                             dm->prev_dstat.operations_write  = dstat[i].operations[DEVSTAT_WRITE];
+                            dm->prev_dstat.operations_other  = dstat[i].operations[DEVSTAT_NO_DATA];
+                            dm->prev_dstat.operations_free   = dstat[i].operations[DEVSTAT_FREE];
                             dm->prev_dstat.duration_read_ms  = dstat[i].duration[DEVSTAT_READ].sec * 1000
                                                                + dstat[i].duration[DEVSTAT_READ].frac * BINTIME_SCALE;
                             dm->prev_dstat.duration_write_ms = dstat[i].duration[DEVSTAT_WRITE].sec * 1000
-                                                               + dstat[i].duration[DEVSTAT_READ].frac * BINTIME_SCALE;
+                                                               + dstat[i].duration[DEVSTAT_WRITE].frac * BINTIME_SCALE;
+                            dm->prev_dstat.duration_other_ms = dstat[i].duration[DEVSTAT_NO_DATA].sec * 1000
+                                                               + dstat[i].duration[DEVSTAT_NO_DATA].frac * BINTIME_SCALE;
+                            dm->prev_dstat.duration_free_ms  = dstat[i].duration[DEVSTAT_FREE].sec * 1000
+                                                               + dstat[i].duration[DEVSTAT_FREE].frac * BINTIME_SCALE;
                             dm->prev_dstat.busy_time_ms      = dstat[i].busy_time.sec * 1000
                                                                + dstat[i].busy_time.frac * BINTIME_SCALE;
                         }
@@ -312,13 +337,20 @@ int do_kern_devstat(int update_every, usec_t dt) {
                         cur_dstat.duration_read_ms  = dstat[i].duration[DEVSTAT_READ].sec * 1000
                                                       + dstat[i].duration[DEVSTAT_READ].frac * BINTIME_SCALE;
                         cur_dstat.duration_write_ms = dstat[i].duration[DEVSTAT_WRITE].sec * 1000
-                                                      + dstat[i].duration[DEVSTAT_READ].frac * BINTIME_SCALE;
+                                                      + dstat[i].duration[DEVSTAT_WRITE].frac * BINTIME_SCALE;
+                        cur_dstat.duration_other_ms = dstat[i].duration[DEVSTAT_NO_DATA].sec * 1000
+                                                      + dstat[i].duration[DEVSTAT_NO_DATA].frac * BINTIME_SCALE;
+                        cur_dstat.duration_free_ms  = dstat[i].duration[DEVSTAT_FREE].sec * 1000
+                                                      + dstat[i].duration[DEVSTAT_FREE].frac * BINTIME_SCALE;
+
                         cur_dstat.busy_time_ms = dstat[i].busy_time.sec * 1000 + dstat[i].busy_time.frac * BINTIME_SCALE;
 
                         // --------------------------------------------------------------------
 
                         if(dm->do_io == CONFIG_BOOLEAN_YES || (dm->do_io == CONFIG_BOOLEAN_AUTO &&
-                                                               (dstat[i].bytes[DEVSTAT_READ] || dstat[i].bytes[DEVSTAT_WRITE]))) {
+                                                               (dstat[i].bytes[DEVSTAT_READ] ||
+                                                                dstat[i].bytes[DEVSTAT_WRITE] ||
+                                                                dstat[i].bytes[DEVSTAT_FREE]))) {
                             if (unlikely(!dm->st_io)) {
                                 dm->st_io = rrdset_create_localhost("disk",
                                                                     disk,
@@ -327,6 +359,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                     "disk.io",
                                                                     "Disk I/O Bandwidth",
                                                                     "kilobytes/s",
+                                                                    "freebsd",
+                                                                    "devstat",
                                                                     2000,
                                                                     update_every,
                                                                     RRDSET_TYPE_AREA
@@ -336,18 +370,24 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                            RRD_ALGORITHM_INCREMENTAL);
                                 dm->rd_io_out = rrddim_add(dm->st_io, "writes", NULL, -1, KILO_FACTOR,
                                                            RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_io_free = rrddim_add(dm->st_io, "frees", NULL, -1, KILO_FACTOR,
+                                                           RRD_ALGORITHM_INCREMENTAL);
                             } else
                                 rrdset_next(dm->st_io);
 
-                            rrddim_set_by_pointer(dm->st_io, dm->rd_io_in,  dstat[i].bytes[DEVSTAT_READ]);
-                            rrddim_set_by_pointer(dm->st_io, dm->rd_io_out, dstat[i].bytes[DEVSTAT_WRITE]);
+                            rrddim_set_by_pointer(dm->st_io, dm->rd_io_in,   dstat[i].bytes[DEVSTAT_READ]);
+                            rrddim_set_by_pointer(dm->st_io, dm->rd_io_out,  dstat[i].bytes[DEVSTAT_WRITE]);
+                            rrddim_set_by_pointer(dm->st_io, dm->rd_io_free, dstat[i].bytes[DEVSTAT_FREE]);
                             rrdset_done(dm->st_io);
                         }
 
                         // --------------------------------------------------------------------
 
                         if(dm->do_ops == CONFIG_BOOLEAN_YES || (dm->do_ops == CONFIG_BOOLEAN_AUTO &&
-                                                                (dstat[i].operations[DEVSTAT_READ] || dstat[i].operations[DEVSTAT_WRITE]))) {
+                                                                (dstat[i].operations[DEVSTAT_READ] ||
+                                                                 dstat[i].operations[DEVSTAT_WRITE] ||
+                                                                 dstat[i].operations[DEVSTAT_NO_DATA] ||
+                                                                 dstat[i].operations[DEVSTAT_FREE]))) {
                             if (unlikely(!dm->st_ops)) {
                                 dm->st_ops = rrdset_create_localhost("disk_ops",
                                                                      disk,
@@ -356,6 +396,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                      "disk.ops",
                                                                      "Disk Completed I/O Operations",
                                                                      "operations/s",
+                                                                    "freebsd",
+                                                                    "devstat",
                                                                      2001,
                                                                      update_every,
                                                                      RRDSET_TYPE_LINE
@@ -363,14 +405,21 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                                 rrdset_flag_set(dm->st_ops, RRDSET_FLAG_DETAIL);
 
-                                dm->rd_ops_in = rrddim_add(dm->st_ops, "reads", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-                                dm->rd_ops_out = rrddim_add(dm->st_ops, "writes", NULL, -1, 1,
-                                                            RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_ops_in   = rrddim_add(dm->st_ops, "reads",  NULL,  1, 1,
+                                                             RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_ops_out  = rrddim_add(dm->st_ops, "writes", NULL, -1, 1,
+                                                             RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_ops_other = rrddim_add(dm->st_ops, "other", NULL,  1, 1,
+                                                             RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_ops_free = rrddim_add(dm->st_ops, "frees",  NULL, -1, 1,
+                                                             RRD_ALGORITHM_INCREMENTAL);
                             } else
                                 rrdset_next(dm->st_ops);
 
-                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_in, dstat[i].operations[DEVSTAT_READ]);
-                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_out, dstat[i].operations[DEVSTAT_WRITE]);
+                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_in,    dstat[i].operations[DEVSTAT_READ]);
+                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_out,   dstat[i].operations[DEVSTAT_WRITE]);
+                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_other, dstat[i].operations[DEVSTAT_NO_DATA]);
+                            rrddim_set_by_pointer(dm->st_ops, dm->rd_ops_free,  dstat[i].operations[DEVSTAT_FREE]);
                             rrdset_done(dm->st_ops);
                         }
 
@@ -386,6 +435,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                       "disk.qops",
                                                                       "Disk Current I/O Operations",
                                                                       "operations",
+                                                                      "freebsd",
+                                                                      "devstat",
                                                                       2002,
                                                                       update_every,
                                                                       RRDSET_TYPE_LINE
@@ -413,6 +464,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                       "disk.util",
                                                                       "Disk Utilization Time",
                                                                       "% of time working",
+                                                                      "freebsd",
+                                                                      "devstat",
                                                                       2004,
                                                                       update_every,
                                                                       RRDSET_TYPE_AREA
@@ -432,7 +485,10 @@ int do_kern_devstat(int update_every, usec_t dt) {
                         // --------------------------------------------------------------------
 
                         if(dm->do_iotime == CONFIG_BOOLEAN_YES || (dm->do_iotime == CONFIG_BOOLEAN_AUTO &&
-                                                                   (cur_dstat.duration_read_ms || cur_dstat.duration_write_ms))) {
+                                                                   (cur_dstat.duration_read_ms ||
+                                                                    cur_dstat.duration_write_ms ||
+                                                                    cur_dstat.duration_other_ms ||
+                                                                    cur_dstat.duration_free_ms))) {
                             if (unlikely(!dm->st_iotime)) {
                                 dm->st_iotime = rrdset_create_localhost("disk_iotime",
                                                                         disk,
@@ -441,6 +497,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                         "disk.iotime",
                                                                         "Disk Total I/O Time",
                                                                         "milliseconds/s",
+                                                                        "freebsd",
+                                                                        "devstat",
                                                                         2022,
                                                                         update_every,
                                                                         RRDSET_TYPE_LINE
@@ -448,15 +506,21 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                                 rrdset_flag_set(dm->st_iotime, RRDSET_FLAG_DETAIL);
 
-                                dm->rd_iotime_in  = rrddim_add(dm->st_iotime, "reads",  NULL,  1, 1,
-                                                               RRD_ALGORITHM_INCREMENTAL);
-                                dm->rd_iotime_out = rrddim_add(dm->st_iotime, "writes", NULL, -1, 1,
-                                                               RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_iotime_in    = rrddim_add(dm->st_iotime, "reads",  NULL,  1, 1,
+                                                                RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_iotime_out   = rrddim_add(dm->st_iotime, "writes", NULL, -1, 1,
+                                                                RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_iotime_other = rrddim_add(dm->st_iotime, "other",  NULL,  1, 1,
+                                                                RRD_ALGORITHM_INCREMENTAL);
+                                dm->rd_iotime_free  = rrddim_add(dm->st_iotime, "frees",  NULL, -1, 1,
+                                                                RRD_ALGORITHM_INCREMENTAL);
                             } else
                                 rrdset_next(dm->st_iotime);
 
-                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_in,  cur_dstat.duration_read_ms);
-                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_out, cur_dstat.duration_write_ms);
+                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_in,    cur_dstat.duration_read_ms);
+                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_out,   cur_dstat.duration_write_ms);
+                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_other, cur_dstat.duration_other_ms);
+                            rrddim_set_by_pointer(dm->st_iotime, dm->rd_iotime_free,  cur_dstat.duration_free_ms);
                             rrdset_done(dm->st_iotime);
                         }
 
@@ -469,7 +533,10 @@ int do_kern_devstat(int update_every, usec_t dt) {
                             // --------------------------------------------------------------------
 
                             if(dm->do_await == CONFIG_BOOLEAN_YES || (dm->do_await == CONFIG_BOOLEAN_AUTO &&
-                                                                      (dstat[i].operations[DEVSTAT_READ] || dstat[i].operations[DEVSTAT_WRITE]))) {
+                                                                      (dstat[i].operations[DEVSTAT_READ] ||
+                                                                       dstat[i].operations[DEVSTAT_WRITE] ||
+                                                                       dstat[i].operations[DEVSTAT_NO_DATA] ||
+                                                                       dstat[i].operations[DEVSTAT_FREE]))) {
                                 if (unlikely(!dm->st_await)) {
                                     dm->st_await = rrdset_create_localhost("disk_await",
                                                                            disk,
@@ -478,6 +545,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                            "disk.await",
                                                                            "Average Completed I/O Operation Time",
                                                                            "ms per operation",
+                                                                           "freebsd",
+                                                                           "devstat",
                                                                            2005,
                                                                            update_every,
                                                                            RRDSET_TYPE_LINE
@@ -485,9 +554,13 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                                     rrdset_flag_set(dm->st_await, RRDSET_FLAG_DETAIL);
 
-                                    dm->rd_await_in  = rrddim_add(dm->st_await, "reads",  NULL,  1, 1,
+                                    dm->rd_await_in    = rrddim_add(dm->st_await, "reads",  NULL,  1, 1,
                                                                   RRD_ALGORITHM_ABSOLUTE);
-                                    dm->rd_await_out = rrddim_add(dm->st_await, "writes", NULL, -1, 1,
+                                    dm->rd_await_out   = rrddim_add(dm->st_await, "writes", NULL, -1, 1,
+                                                                  RRD_ALGORITHM_ABSOLUTE);
+                                    dm->rd_await_other = rrddim_add(dm->st_await, "other",  NULL,  1, 1,
+                                                                  RRD_ALGORITHM_ABSOLUTE);
+                                    dm->rd_await_free  = rrddim_add(dm->st_await, "frees",  NULL, -1, 1,
                                                                   RRD_ALGORITHM_ABSOLUTE);
                                 } else
                                     rrdset_next(dm->st_await);
@@ -506,13 +579,29 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                       (dstat[i].operations[DEVSTAT_WRITE] -
                                                        dm->prev_dstat.operations_write) :
                                                       0);
+                                rrddim_set_by_pointer(dm->st_await, dm->rd_await_other,
+                                                      (dstat[i].operations[DEVSTAT_NO_DATA] -
+                                                       dm->prev_dstat.operations_other) ?
+                                                      (cur_dstat.duration_other_ms - dm->prev_dstat.duration_other_ms) /
+                                                      (dstat[i].operations[DEVSTAT_NO_DATA] -
+                                                       dm->prev_dstat.operations_other) :
+                                                      0);
+                                rrddim_set_by_pointer(dm->st_await, dm->rd_await_free,
+                                                      (dstat[i].operations[DEVSTAT_FREE] -
+                                                       dm->prev_dstat.operations_free) ?
+                                                      (cur_dstat.duration_free_ms - dm->prev_dstat.duration_free_ms) /
+                                                      (dstat[i].operations[DEVSTAT_FREE] -
+                                                       dm->prev_dstat.operations_free) :
+                                                      0);
                                 rrdset_done(dm->st_await);
                             }
 
                             // --------------------------------------------------------------------
 
                             if(dm->do_avagsz == CONFIG_BOOLEAN_YES || (dm->do_avagsz == CONFIG_BOOLEAN_AUTO &&
-                                                                       (dstat[i].operations[DEVSTAT_READ] || dstat[i].operations[DEVSTAT_WRITE]))) {
+                                                                       (dstat[i].operations[DEVSTAT_READ] ||
+                                                                        dstat[i].operations[DEVSTAT_WRITE] ||
+                                                                        dstat[i].operations[DEVSTAT_FREE]))) {
                                 if (unlikely(!dm->st_avagsz)) {
                                     dm->st_avagsz = rrdset_create_localhost("disk_avgsz",
                                                                             disk,
@@ -521,6 +610,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                             "disk.avgsz",
                                                                             "Average Completed I/O Operation Bandwidth",
                                                                             "kilobytes per operation",
+                                                                            "freebsd",
+                                                                            "devstat",
                                                                             2006,
                                                                             update_every,
                                                                             RRDSET_TYPE_AREA
@@ -528,10 +619,12 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                                     rrdset_flag_set(dm->st_avagsz, RRDSET_FLAG_DETAIL);
 
-                                    dm->rd_avagsz_in  = rrddim_add(dm->st_avagsz, "reads",  NULL,  1, KILO_FACTOR,
-                                                                   RRD_ALGORITHM_ABSOLUTE);
-                                    dm->rd_avagsz_out = rrddim_add(dm->st_avagsz, "writes", NULL, -1, KILO_FACTOR,
-                                                                   RRD_ALGORITHM_ABSOLUTE);
+                                    dm->rd_avagsz_in    = rrddim_add(dm->st_avagsz, "reads",  NULL,  1, KILO_FACTOR,
+                                                                     RRD_ALGORITHM_ABSOLUTE);
+                                    dm->rd_avagsz_out   = rrddim_add(dm->st_avagsz, "writes", NULL, -1, KILO_FACTOR,
+                                                                     RRD_ALGORITHM_ABSOLUTE);
+                                    dm->rd_avagsz_free  = rrddim_add(dm->st_avagsz, "frees",  NULL, -1, KILO_FACTOR,
+                                                                     RRD_ALGORITHM_ABSOLUTE);
                                 } else
                                     rrdset_next(dm->st_avagsz);
 
@@ -549,13 +642,23 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                       (dstat[i].operations[DEVSTAT_WRITE] -
                                                        dm->prev_dstat.operations_write) :
                                                       0);
+                                rrddim_set_by_pointer(dm->st_avagsz, dm->rd_avagsz_free,
+                                                      (dstat[i].operations[DEVSTAT_FREE] -
+                                                       dm->prev_dstat.operations_free) ?
+                                                      (dstat[i].bytes[DEVSTAT_FREE] - dm->prev_dstat.bytes_free) /
+                                                      (dstat[i].operations[DEVSTAT_FREE] -
+                                                       dm->prev_dstat.operations_free) :
+                                                      0);
                                 rrdset_done(dm->st_avagsz);
                             }
 
                             // --------------------------------------------------------------------
 
                             if(dm->do_svctm == CONFIG_BOOLEAN_YES || (dm->do_svctm == CONFIG_BOOLEAN_AUTO &&
-                                                                      (dstat[i].operations[DEVSTAT_READ] || dstat[i].operations[DEVSTAT_WRITE]))) {
+                                                                      (dstat[i].operations[DEVSTAT_READ] ||
+                                                                       dstat[i].operations[DEVSTAT_WRITE] ||
+                                                                       dstat[i].operations[DEVSTAT_NO_DATA] ||
+                                                                       dstat[i].operations[DEVSTAT_FREE]))) {
                                 if (unlikely(!dm->st_svctm)) {
                                     dm->st_svctm = rrdset_create_localhost("disk_svctm",
                                                                            disk,
@@ -564,6 +667,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                                            "disk.svctm",
                                                                            "Average Service Time",
                                                                            "ms per operation",
+                                                                           "freebsd",
+                                                                           "devstat",
                                                                            2007,
                                                                            update_every,
                                                                            RRDSET_TYPE_LINE
@@ -578,10 +683,14 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                                 rrddim_set_by_pointer(dm->st_svctm, dm->rd_svctm,
                                                       ((dstat[i].operations[DEVSTAT_READ] - dm->prev_dstat.operations_read) +
-                                                       (dstat[i].operations[DEVSTAT_WRITE] - dm->prev_dstat.operations_write)) ?
+                                                       (dstat[i].operations[DEVSTAT_WRITE] - dm->prev_dstat.operations_write) +
+                                                       (dstat[i].operations[DEVSTAT_NO_DATA] - dm->prev_dstat.operations_other) +
+                                                       (dstat[i].operations[DEVSTAT_FREE] - dm->prev_dstat.operations_free)) ?
                                                       (cur_dstat.busy_time_ms - dm->prev_dstat.busy_time_ms) /
                                                       ((dstat[i].operations[DEVSTAT_READ] - dm->prev_dstat.operations_read) +
-                                                       (dstat[i].operations[DEVSTAT_WRITE] - dm->prev_dstat.operations_write)) :
+                                                       (dstat[i].operations[DEVSTAT_WRITE] - dm->prev_dstat.operations_write) +
+                                                       (dstat[i].operations[DEVSTAT_NO_DATA] - dm->prev_dstat.operations_other) +
+                                                       (dstat[i].operations[DEVSTAT_FREE] - dm->prev_dstat.operations_free)) :
                                                       0);
                                 rrdset_done(dm->st_svctm);
                             }
@@ -590,10 +699,15 @@ int do_kern_devstat(int update_every, usec_t dt) {
 
                             dm->prev_dstat.bytes_read        = dstat[i].bytes[DEVSTAT_READ];
                             dm->prev_dstat.bytes_write       = dstat[i].bytes[DEVSTAT_WRITE];
+                            dm->prev_dstat.bytes_free        = dstat[i].bytes[DEVSTAT_FREE];
                             dm->prev_dstat.operations_read   = dstat[i].operations[DEVSTAT_READ];
                             dm->prev_dstat.operations_write  = dstat[i].operations[DEVSTAT_WRITE];
+                            dm->prev_dstat.operations_other  = dstat[i].operations[DEVSTAT_NO_DATA];
+                            dm->prev_dstat.operations_free   = dstat[i].operations[DEVSTAT_FREE];
                             dm->prev_dstat.duration_read_ms  = cur_dstat.duration_read_ms;
                             dm->prev_dstat.duration_write_ms = cur_dstat.duration_write_ms;
+                            dm->prev_dstat.duration_other_ms = cur_dstat.duration_other_ms;
+                            dm->prev_dstat.duration_free_ms  = cur_dstat.duration_free_ms;
                             dm->prev_dstat.busy_time_ms      = cur_dstat.busy_time_ms;
                         }
                     }
@@ -613,6 +727,8 @@ int do_kern_devstat(int update_every, usec_t dt) {
                                                      NULL,
                                                      "Disk I/O",
                                                      "kilobytes/s",
+                                                     "freebsd",
+                                                     "devstat",
                                                      150,
                                                      update_every,
                                                      RRDSET_TYPE_AREA

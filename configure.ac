@@ -4,7 +4,7 @@
 AC_PREREQ(2.60)
 
 define([VERSION_MAJOR], [1])
-define([VERSION_MINOR], [6])
+define([VERSION_MINOR], [9])
 define([VERSION_FIX], [1])
 define([VERSION_NUMBER], VERSION_MAJOR[.]VERSION_MINOR[.]VERSION_FIX)
 define([VERSION_SUFFIX], [_rolling])
@@ -36,7 +36,7 @@ AC_CONFIG_AUX_DIR([.])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([src/main.c])
-AM_INIT_AUTOMAKE
+AM_INIT_AUTOMAKE([tar-pax])
 AC_CANONICAL_HOST
 AC_PROG_CC
 AC_PROG_INSTALL
@@ -49,21 +49,27 @@ AC_USE_SYSTEM_EXTENSIONS
 
 AC_ARG_ENABLE(
     [plugin-nfacct],
-    [AS_HELP_STRING([--enable-plugin-nfacct], [enable nfacct plugin, requires root])],
+    [AS_HELP_STRING([--enable-plugin-nfacct], [enable nfacct plugin, requires running netdata as root @<:@default disabled@:>@])],
     ,
     [enable_plugin_nfacct="no"]
 )
 AC_ARG_ENABLE(
     [plugin-freeipmi],
-    [AS_HELP_STRING([--enable-plugin-freeipmi], [enable freeipmi plugin])],
+    [AS_HELP_STRING([--enable-plugin-freeipmi], [enable freeipmi plugin @<:@default autodetect@:>@])],
     ,
     [enable_plugin_freeipmi="detect"]
 )
 AC_ARG_ENABLE(
     [pedantic],
-    [AS_HELP_STRING([--enable-pedantic], [enable pedantic compiler warnings])],
+    [AS_HELP_STRING([--enable-pedantic], [enable pedantic compiler warnings @<:@default disabled@:>@])],
     ,
     [enable_pedantic="no"]
+)
+AC_ARG_ENABLE(
+    [accept4],
+    [AS_HELP_STRING([--disable-accept4], [System does not have accept4 @<:@default autodetect@:>@])],
+    ,
+    [enable_accept4="detect"]
 )
 AC_ARG_WITH(
     [webdir],
@@ -73,25 +79,25 @@ AC_ARG_WITH(
 )
 AC_ARG_WITH(
     [libcap],
-    [AS_HELP_STRING([--with-libcap], [build with libcap])],
+    [AS_HELP_STRING([--with-libcap], [build with libcap @<:@default autodetect@:>@])],
     ,
     [with_libcap="detect"]
 )
 AC_ARG_WITH(
     [zlib],
-    [AS_HELP_STRING([--with-zlib], [build with zlib])],
+    [AS_HELP_STRING([--without-zlib], [build without zlib @<:@default enabled@:>@])],
     ,
     [with_zlib="yes"]
 )
 AC_ARG_WITH(
     [math],
-    [AS_HELP_STRING([--with-math], [build with math])],
+    [AS_HELP_STRING([--without-math], [build without math @<:@default enabled@:>@])],
     ,
     [with_math="yes"]
 )
 AC_ARG_WITH(
     [user],
-    [AS_HELP_STRING([--with-user], [use this user to drop privilege])],
+    [AS_HELP_STRING([--with-user], [use this user to drop privilege @<:@default nobody@:>@])],
     ,
     [with_user="nobody"]
 )
@@ -103,7 +109,7 @@ AC_ARG_ENABLE(
 )
 AC_ARG_ENABLE(
     [lto],
-    [AS_HELP_STRING([--disable-lto], [Link Time Optimizations @<:@default enabled@:>@])],
+    [AS_HELP_STRING([--disable-lto], [Link Time Optimizations @<:@default autodetect@:>@])],
     ,
     [enable_lto="detect"]
 )
@@ -118,10 +124,10 @@ AC_ARG_ENABLE(
 AX_GCC_FUNC_ATTRIBUTE([returns_nonnull])
 AX_GCC_FUNC_ATTRIBUTE([malloc])
 AX_GCC_FUNC_ATTRIBUTE([noreturn])
+AX_GCC_FUNC_ATTRIBUTE([noinline])
 AX_GCC_FUNC_ATTRIBUTE([format])
 AX_GCC_FUNC_ATTRIBUTE([warn_unused_result])
 
-AC_CHECK_FUNCS_ONCE(accept4)
 AC_CHECK_TYPES([struct timespec, clockid_t], [], [], [[#include <time.h>]])
 AC_SEARCH_LIBS([clock_gettime], [rt posix4])
 AC_CHECK_FUNCS([clock_gettime])
@@ -148,6 +154,9 @@ AC_HEADER_RESOLV
 
 AC_CHECK_HEADERS_ONCE([sys/prctl.h])
 
+if test "${enable_accept4}" != "no"; then
+    AC_CHECK_FUNCS_ONCE(accept4)
+fi
 
 # -----------------------------------------------------------------------------
 # operating system detection
@@ -426,6 +435,21 @@ AM_CONDITIONAL([ENABLE_PLUGIN_NFACCT], [test "${enable_plugin_nfacct}" = "yes"])
 
 
 # -----------------------------------------------------------------------------
+# check for setns() - cgroup-network
+
+AC_CHECK_FUNC([setns])
+AC_MSG_CHECKING([if cgroup-network can be enabled])
+if test "$ac_cv_func_setns" = "yes" ; then
+    have_setns="yes"
+    AC_DEFINE([HAVE_SETNS], [1], [Define 1 if you have setns() function])
+else
+    have_setns="no"
+fi
+AC_MSG_RESULT([${have_setns}])
+AM_CONDITIONAL([ENABLE_PLUGIN_CGROUP_NETWORK], [test "${have_setns}" = "yes"])
+
+
+# -----------------------------------------------------------------------------
 # Link-Time-Optimization
 
 if test "${enable_lto}" != "no"; then
@@ -492,7 +516,10 @@ AC_CONFIG_FILES([
     src/Makefile
     system/Makefile
     web/Makefile
+    diagrams/Makefile
+    makeself/Makefile
     contrib/Makefile
+    tests/Makefile
 ])
 AC_OUTPUT
 

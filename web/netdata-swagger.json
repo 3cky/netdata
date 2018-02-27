@@ -133,6 +133,16 @@
                         "allowEmptyValue": false
                     },
                     {
+                        "name": "gtime",
+                        "in": "query",
+                        "description": "The grouping number of seconds. This is used in conjunction with group=average to change the units of metrics (ie when the data is per-second, setting gtime=60 will turn them to per-minute).",
+                        "required": false,
+                        "type": "number",
+                        "format": "integer",
+                        "allowEmptyValue": false,
+                        "default": 0
+                    },
+                    {
                         "name": "format",
                         "in": "query",
                         "description": "The format of the data to be returned.",
@@ -177,7 +187,9 @@
                                 "objectrows",
                                 "google_json",
                                 "percentage",
-                                "unaligned"
+                                "unaligned",
+                                "match-ids",
+                                "match-names"
                             ],
                             "collectionFormat": "pipes"
                         },
@@ -258,7 +270,7 @@
                     {
                         "name": "dimension",
                         "in": "query",
-                        "description": "zero, one or more dimension ids, as returned by the /chart call.",
+                        "description": "zero, one or more dimension ids or names, as returned by the /chart call, separated with comma or pipe. Netdata simple patterns are supported.",
                         "required": false,
                         "type": "array",
                         "items": {
@@ -314,6 +326,7 @@
                             "enum": [
                                 "abs",
                                 "absolute",
+                                "display-absolute",
                                 "absolute-sum",
                                 "null2zero",
                                 "percentage",

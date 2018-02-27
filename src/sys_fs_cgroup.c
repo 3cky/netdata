@@ -41,7 +41,7 @@ static char *cgroup_memory_base = NULL;
 static char *cgroup_devices_base = NULL;
 
 static int cgroup_root_count = 0;
-static int cgroup_root_max = 500;
+static int cgroup_root_max = 1000;
 static int cgroup_max_depth = 0;
 
 static SIMPLE_PATTERN *enabled_cgroup_patterns = NULL;
@@ -50,6 +50,7 @@ static SIMPLE_PATTERN *enabled_cgroup_renames = NULL;
 static SIMPLE_PATTERN *systemd_services_cgroups = NULL;
 
 static char *cgroups_rename_script = NULL;
+static char *cgroups_network_interface_script = NULL;
 
 static int cgroups_check = 0;
 
@@ -103,7 +104,7 @@ void read_cgroup_plugin_configuration() {
     mi = mountinfo_find_by_filesystem_super_option(root, "cgroup", "cpuacct");
     if(!mi) mi = mountinfo_find_by_filesystem_mount_source(root, "cgroup", "cpuacct");
     if(!mi) {
-        error("Cannot find cgroup cpuacct mountinfo. Assuming default: /sys/fs/cgroup/cpuacct");
+        error("CGROUP: cannot find cpuacct mountinfo. Assuming default: /sys/fs/cgroup/cpuacct");
         s = "/sys/fs/cgroup/cpuacct";
     }
     else s = mi->mount_point;
@@ -113,7 +114,7 @@ void read_cgroup_plugin_configuration() {
     mi = mountinfo_find_by_filesystem_super_option(root, "cgroup", "blkio");
     if(!mi) mi = mountinfo_find_by_filesystem_mount_source(root, "cgroup", "blkio");
     if(!mi) {
-        error("Cannot find cgroup blkio mountinfo. Assuming default: /sys/fs/cgroup/blkio");
+        error("CGROUP: cannot find blkio mountinfo. Assuming default: /sys/fs/cgroup/blkio");
         s = "/sys/fs/cgroup/blkio";
     }
     else s = mi->mount_point;
@@ -123,7 +124,7 @@ void read_cgroup_plugin_configuration() {
     mi = mountinfo_find_by_filesystem_super_option(root, "cgroup", "memory");
     if(!mi) mi = mountinfo_find_by_filesystem_mount_source(root, "cgroup", "memory");
     if(!mi) {
-        error("Cannot find cgroup memory mountinfo. Assuming default: /sys/fs/cgroup/memory");
+        error("CGROUP: cannot find memory mountinfo. Assuming default: /sys/fs/cgroup/memory");
         s = "/sys/fs/cgroup/memory";
     }
     else s = mi->mount_point;
@@ -133,7 +134,7 @@ void read_cgroup_plugin_configuration() {
     mi = mountinfo_find_by_filesystem_super_option(root, "cgroup", "devices");
     if(!mi) mi = mountinfo_find_by_filesystem_mount_source(root, "cgroup", "devices");
     if(!mi) {
-        error("Cannot find cgroup devices mountinfo. Assuming default: /sys/fs/cgroup/devices");
+        error("CGROUP: cannot find devices mountinfo. Assuming default: /sys/fs/cgroup/devices");
         s = "/sys/fs/cgroup/devices";
     }
     else s = mi->mount_point;
@@ -150,7 +151,12 @@ void read_cgroup_plugin_configuration() {
             // ----------------------------------------------------------------
 
                     " !*/init.scope "                      // ignore init.scope
-                    " *.scope "                            // we need all *.scope for sure
+                    " !/system.slice/run-*.scope "         // ignore system.slice/run-XXXX.scope
+                    " *.scope "                            // we need all other *.scope for sure
+
+            // ----------------------------------------------------------------
+
+                    " /machine.slice/*.service "           // #3367 systemd-nspawn
 
             // ----------------------------------------------------------------
 
@@ -159,6 +165,7 @@ void read_cgroup_plugin_configuration() {
                     " !*.mount "
                     " !*.partition "
                     " !*.service "
+                    " !*.socket "
                     " !*.slice "
                     " !*.swap "
                     " !*.user "
@@ -166,55 +173,67 @@ void read_cgroup_plugin_configuration() {
                     " !/docker "
                     " !/libvirt "
                     " !/lxc "
-                    " !/lxc/*/ns "                         //  #1397
+                    " !/lxc/*/* "                          //  #1397 #2649
                     " !/machine "
                     " !/qemu "
                     " !/system "
                     " !/systemd "
                     " !/user "
                     " * "                                  // enable anything else
-            ), SIMPLE_PATTERN_EXACT);
+            ), NULL, SIMPLE_PATTERN_EXACT);
 
     enabled_cgroup_paths = simple_pattern_create(
             config_get("plugin:cgroups", "search for cgroups in subpaths matching",
                     " !*/init.scope "                      // ignore init.scope
                     " !*-qemu "                            //  #345
+                    " !*.libvirt-qemu "                    //  #3010
                     " !/init.scope "
                     " !/system "
                     " !/systemd "
                     " !/user "
                     " !/user.slice "
+                    " !/lxc/*/* "                          //  #2161 #2649
                     " * "
-            ), SIMPLE_PATTERN_EXACT);
+            ), NULL, SIMPLE_PATTERN_EXACT);
 
     snprintfz(filename, FILENAME_MAX, "%s/cgroup-name.sh", netdata_configured_plugins_dir);
     cgroups_rename_script = config_get("plugin:cgroups", "script to get cgroup names", filename);
 
+    snprintfz(filename, FILENAME_MAX, "%s/cgroup-network", netdata_configured_plugins_dir);
+    cgroups_network_interface_script = config_get("plugin:cgroups", "script to get cgroup network interfaces", filename);
+
     enabled_cgroup_renames = simple_pattern_create(
             config_get("plugin:cgroups", "run script to rename cgroups matching",
-                    " *.scope "
-                    " *docker* "
-                    " *lxc* "
-                    " *qemu* "
                     " !/ "
                     " !*.mount "
+                    " !*.socket "
                     " !*.partition "
+                    " /machine.slice/*.service "          // #3367 systemd-nspawn
                     " !*.service "
                     " !*.slice "
                     " !*.swap "
                     " !*.user "
+                    " !init.scope "
+                    " !*.scope/vcpu* "                    // libvirtd adds these sub-cgroups
+                    " !*.scope/emulator "                 // libvirtd adds these sub-cgroups
+                    " *.scope "
+                    " *docker* "
+                    " *lxc* "
+                    " *qemu* "
+                    " *kubepods* "                        // #3396 kubernetes
+                    " *.libvirt-qemu "                    // #3010
                     " * "
-            ), SIMPLE_PATTERN_EXACT);
+            ), NULL, SIMPLE_PATTERN_EXACT);
 
     if(cgroup_enable_systemd_services) {
         systemd_services_cgroups = simple_pattern_create(
                 config_get("plugin:cgroups", "cgroups to match as systemd services",
                         " !/system.slice/*/*.service "
                         " /system.slice/*.service "
-                ), SIMPLE_PATTERN_EXACT);
+                ), NULL, SIMPLE_PATTERN_EXACT);
     }
 
-    mountinfo_free(root);
+    mountinfo_free_all(root);
 }
 
 // ----------------------------------------------------------------------------
@@ -328,6 +347,12 @@ struct cpuacct_usage {
     unsigned long long *cpu_percpu;
 };
 
+struct cgroup_network_interface {
+    const char *host_device;
+    const char *container_device;
+    struct cgroup_network_interface *next;
+};
+
 #define CGROUP_OPTIONS_DISABLED_DUPLICATE   0x00000001
 #define CGROUP_OPTIONS_SYSTEM_SLICE_SERVICE 0x00000002
 
@@ -358,6 +383,8 @@ struct cgroup {
 
     struct blkio io_merged;                     // operations
     struct blkio io_queued;                     // operations
+
+    struct cgroup_network_interface *interfaces;
 
     // per cgroup charts
     RRDSET *st_cpu;
@@ -432,7 +459,7 @@ static inline void cgroup_read_cpuacct_stat(struct cpuacct_stat *cp) {
         unsigned long i, lines = procfile_lines(ff);
 
         if(unlikely(lines < 1)) {
-            error("File '%s' should have 1+ lines.", cp->filename);
+            error("CGROUP: file '%s' should have 1+ lines.", cp->filename);
             cp->updated = 0;
             return;
         }
@@ -474,7 +501,7 @@ static inline void cgroup_read_cpuacct_usage(struct cpuacct_usage *ca) {
         }
 
         if(unlikely(procfile_lines(ff) < 1)) {
-            error("File '%s' should have 1+ lines but has %zu.", ca->filename, procfile_lines(ff));
+            error("CGROUP: file '%s' should have 1+ lines but has %zu.", ca->filename, procfile_lines(ff));
             ca->updated = 0;
             return;
         }
@@ -513,14 +540,14 @@ static inline void cgroup_read_cpuacct_usage(struct cpuacct_usage *ca) {
 }
 
 static inline void cgroup_read_blkio(struct blkio *io) {
-    static procfile *ff = NULL;
-
     if(unlikely(io->enabled == CONFIG_BOOLEAN_AUTO && io->delay_counter > 0)) {
         io->delay_counter--;
         return;
     }
 
     if(likely(io->filename)) {
+        static procfile *ff = NULL;
+
         ff = procfile_reopen(ff, io->filename, NULL, PROCFILE_FLAG_DEFAULT);
         if(unlikely(!ff)) {
             io->updated = 0;
@@ -538,7 +565,7 @@ static inline void cgroup_read_blkio(struct blkio *io) {
         unsigned long i, lines = procfile_lines(ff);
 
         if(unlikely(lines < 1)) {
-            error("File '%s' should have 1+ lines.", io->filename);
+            error("CGROUP: file '%s' should have 1+ lines.", io->filename);
             io->updated = 0;
             return;
         }
@@ -611,7 +638,7 @@ static inline void cgroup_read_memory(struct memory *mem) {
         unsigned long i, lines = procfile_lines(ff);
 
         if(unlikely(lines < 1)) {
-            error("File '%s' should have 1+ lines.", mem->filename_detailed);
+            error("CGROUP: file '%s' should have 1+ lines.", mem->filename_detailed);
             mem->updated_detailed = 0;
             goto memory_next;
         }
@@ -717,6 +744,77 @@ static inline void read_all_cgroups(struct cgroup *root) {
 }
 
 // ----------------------------------------------------------------------------
+// cgroup network interfaces
+
+#define CGROUP_NETWORK_INTERFACE_MAX_LINE 2048
+static inline void read_cgroup_network_interfaces(struct cgroup *cg) {
+    debug(D_CGROUP, "looking for the network interfaces of cgroup '%s' with chart id '%s' and title '%s'", cg->id, cg->chart_id, cg->chart_title);
+
+    pid_t cgroup_pid;
+    char buffer[CGROUP_NETWORK_INTERFACE_MAX_LINE + 1];
+
+    snprintfz(buffer, CGROUP_NETWORK_INTERFACE_MAX_LINE, "exec %s --cgroup '%s%s'", cgroups_network_interface_script, cgroup_cpuacct_base, cg->id);
+
+    debug(D_CGROUP, "executing command '%s' for cgroup '%s'", buffer, cg->id);
+    FILE *fp = mypopen(buffer, &cgroup_pid);
+    if(fp) {
+        char *s;
+        while((s = fgets(buffer, CGROUP_NETWORK_INTERFACE_MAX_LINE, fp))) {
+            trim(s);
+
+            if(*s && *s != '\n') {
+                char *t = s;
+                while(*t && *t != ' ') t++;
+                if(*t == ' ') {
+                    *t = '\0';
+                    t++;
+                }
+
+                if(!*s) {
+                    error("CGROUP: empty host interface returned by script");
+                    continue;
+                }
+
+                if(!*t) {
+                    error("CGROUP: empty guest interface returned by script");
+                    continue;
+                }
+
+                struct cgroup_network_interface *i = callocz(1, sizeof(struct cgroup_network_interface));
+                i->host_device = strdupz(s);
+                i->container_device = strdupz(t);
+                i->next = cg->interfaces;
+                cg->interfaces = i;
+
+                info("CGROUP: cgroup '%s' has network interface '%s' as '%s'", cg->id, i->host_device, i->container_device);
+
+                // register a device rename to proc_net_dev.c
+                netdev_rename_device_add(i->host_device, i->container_device, cg->chart_id);
+            }
+        }
+
+        mypclose(fp, cgroup_pid);
+        // debug(D_CGROUP, "closed command for cgroup '%s'", cg->id);
+    }
+    else
+        error("CGROUP: cannot popen(\"%s\", \"r\").", buffer);
+}
+
+static inline void free_cgroup_network_interfaces(struct cgroup *cg) {
+    while(cg->interfaces) {
+        struct cgroup_network_interface *i = cg->interfaces;
+        cg->interfaces = i->next;
+
+        // delete the registration of proc_net_dev rename
+        netdev_rename_device_del(i->host_device);
+
+        freez((void *)i->host_device);
+        freez((void *)i->container_device);
+        freez((void *)i);
+    }
+}
+
+// ----------------------------------------------------------------------------
 // add/remove/find cgroup objects
 
 #define CGROUP_CHARTID_LINE_MAX 1024
@@ -749,9 +847,9 @@ static inline void cgroup_get_chart_name(struct cgroup *cg) {
     pid_t cgroup_pid;
     char buffer[CGROUP_CHARTID_LINE_MAX + 1];
 
-    snprintfz(buffer, CGROUP_CHARTID_LINE_MAX, "exec %s '%s'", cgroups_rename_script, cg->chart_id);
+    snprintfz(buffer, CGROUP_CHARTID_LINE_MAX, "exec %s '%s' '%s'", cgroups_rename_script, cg->chart_id, cg->id);
 
-    debug(D_CGROUP, "executing command '%s' for cgroup '%s'", buffer, cg->id);
+    debug(D_CGROUP, "executing command \"%s\" for cgroup '%s'", buffer, cg->id);
     FILE *fp = mypopen(buffer, &cgroup_pid);
     if(fp) {
         // debug(D_CGROUP, "reading from command '%s' for cgroup '%s'", buffer, cg->id);
@@ -774,7 +872,7 @@ static inline void cgroup_get_chart_name(struct cgroup *cg) {
         }
     }
     else
-        error("CGROUP: Cannot popen(\"%s\", \"r\").", buffer);
+        error("CGROUP: cannot popen(\"%s\", \"r\").", buffer);
 }
 
 static inline struct cgroup *cgroup_add(const char *id) {
@@ -782,7 +880,7 @@ static inline struct cgroup *cgroup_add(const char *id) {
     debug(D_CGROUP, "adding to list, cgroup with id '%s'", id);
 
     if(cgroup_root_count >= cgroup_root_max) {
-        info("Maximum number of cgroups reached (%d). Not adding cgroup '%s'", cgroup_root_count, id);
+        info("CGROUP: maximum number of cgroups reached (%d). Not adding cgroup '%s'", cgroup_root_count, id);
         return NULL;
     }
 
@@ -871,7 +969,7 @@ static inline struct cgroup *cgroup_add(const char *id) {
         for (t = cgroup_root; t; t = t->next) {
             if (t != cg && t->enabled && t->hash_chart == cg->hash_chart && !strcmp(t->chart_id, cg->chart_id)) {
                 if (!strncmp(t->chart_id, "/system.slice/", 14) && !strncmp(cg->chart_id, "/init.scope/system.slice/", 25)) {
-                    error("Control group with chart id '%s' already exists with id '%s' and is enabled. Swapping them by enabling cgroup with id '%s' and disabling cgroup with id '%s'.",
+                    error("CGROUP: chart id '%s' already exists with id '%s' and is enabled. Swapping them by enabling cgroup with id '%s' and disabling cgroup with id '%s'.",
                           cg->chart_id, t->id, cg->id, t->id);
                     debug(D_CGROUP, "Control group with chart id '%s' already exists with id '%s' and is enabled. Swapping them by enabling cgroup with id '%s' and disabling cgroup with id '%s'.",
                           cg->chart_id, t->id, cg->id, t->id);
@@ -879,7 +977,7 @@ static inline struct cgroup *cgroup_add(const char *id) {
                     t->options |= CGROUP_OPTIONS_DISABLED_DUPLICATE;
                 }
                 else {
-                    error("Control group with chart id '%s' already exists with id '%s' and is enabled and available. Disabling cgroup with id '%s'.",
+                    error("CGROUP: chart id '%s' already exists with id '%s' and is enabled and available. Disabling cgroup with id '%s'.",
                           cg->chart_id, t->id, cg->id);
                     debug(D_CGROUP, "Control group with chart id '%s' already exists with id '%s' and is enabled and available. Disabling cgroup with id '%s'.",
                           cg->chart_id, t->id, cg->id);
@@ -892,6 +990,9 @@ static inline struct cgroup *cgroup_add(const char *id) {
         }
     }
 
+    if(cg->enabled && !(cg->options & CGROUP_OPTIONS_SYSTEM_SLICE_SERVICE))
+        read_cgroup_network_interfaces(cg);
+
     debug(D_CGROUP, "ADDED CGROUP: '%s' with chart id '%s' and title '%s' as %s (default was %s)", cg->id, cg->chart_id, cg->chart_title, (cg->enabled)?"enabled":"disabled", (def)?"enabled":"disabled");
 
     return cg;
@@ -900,20 +1001,22 @@ static inline struct cgroup *cgroup_add(const char *id) {
 static inline void cgroup_free(struct cgroup *cg) {
     debug(D_CGROUP, "Removing cgroup '%s' with chart id '%s' (was %s and %s)", cg->id, cg->chart_id, (cg->enabled)?"enabled":"disabled", (cg->available)?"available":"not available");
 
-    if(cg->st_cpu)                   rrdset_flag_set(cg->st_cpu,                   RRDSET_FLAG_OBSOLETE);
-    if(cg->st_cpu_per_core)          rrdset_flag_set(cg->st_cpu_per_core,          RRDSET_FLAG_OBSOLETE);
-    if(cg->st_mem)                   rrdset_flag_set(cg->st_mem,                   RRDSET_FLAG_OBSOLETE);
-    if(cg->st_writeback)             rrdset_flag_set(cg->st_writeback,             RRDSET_FLAG_OBSOLETE);
-    if(cg->st_mem_activity)          rrdset_flag_set(cg->st_mem_activity,          RRDSET_FLAG_OBSOLETE);
-    if(cg->st_pgfaults)              rrdset_flag_set(cg->st_pgfaults,              RRDSET_FLAG_OBSOLETE);
-    if(cg->st_mem_usage)             rrdset_flag_set(cg->st_mem_usage,             RRDSET_FLAG_OBSOLETE);
-    if(cg->st_mem_failcnt)           rrdset_flag_set(cg->st_mem_failcnt,           RRDSET_FLAG_OBSOLETE);
-    if(cg->st_io)                    rrdset_flag_set(cg->st_io,                    RRDSET_FLAG_OBSOLETE);
-    if(cg->st_serviced_ops)          rrdset_flag_set(cg->st_serviced_ops,          RRDSET_FLAG_OBSOLETE);
-    if(cg->st_throttle_io)           rrdset_flag_set(cg->st_throttle_io,           RRDSET_FLAG_OBSOLETE);
-    if(cg->st_throttle_serviced_ops) rrdset_flag_set(cg->st_throttle_serviced_ops, RRDSET_FLAG_OBSOLETE);
-    if(cg->st_queued_ops)            rrdset_flag_set(cg->st_queued_ops,            RRDSET_FLAG_OBSOLETE);
-    if(cg->st_merged_ops)            rrdset_flag_set(cg->st_merged_ops,            RRDSET_FLAG_OBSOLETE);
+    if(cg->st_cpu)                   rrdset_is_obsolete(cg->st_cpu);
+    if(cg->st_cpu_per_core)          rrdset_is_obsolete(cg->st_cpu_per_core);
+    if(cg->st_mem)                   rrdset_is_obsolete(cg->st_mem);
+    if(cg->st_writeback)             rrdset_is_obsolete(cg->st_writeback);
+    if(cg->st_mem_activity)          rrdset_is_obsolete(cg->st_mem_activity);
+    if(cg->st_pgfaults)              rrdset_is_obsolete(cg->st_pgfaults);
+    if(cg->st_mem_usage)             rrdset_is_obsolete(cg->st_mem_usage);
+    if(cg->st_mem_failcnt)           rrdset_is_obsolete(cg->st_mem_failcnt);
+    if(cg->st_io)                    rrdset_is_obsolete(cg->st_io);
+    if(cg->st_serviced_ops)          rrdset_is_obsolete(cg->st_serviced_ops);
+    if(cg->st_throttle_io)           rrdset_is_obsolete(cg->st_throttle_io);
+    if(cg->st_throttle_serviced_ops) rrdset_is_obsolete(cg->st_throttle_serviced_ops);
+    if(cg->st_queued_ops)            rrdset_is_obsolete(cg->st_queued_ops);
+    if(cg->st_merged_ops)            rrdset_is_obsolete(cg->st_merged_ops);
+
+    free_cgroup_network_interfaces(cg);
 
     freez(cg->cpuacct_usage.cpu_percpu);
 
@@ -978,7 +1081,7 @@ static inline void found_subdir_in_dir(const char *dir) {
                     depth++;
 
             if(depth > cgroup_max_depth) {
-                info("cgroup '%s' is too deep (%d, while max is %d)", dir, depth, cgroup_max_depth);
+                info("CGROUP: '%s' is too deep (%d, while max is %d)", dir, depth, cgroup_max_depth);
                 return;
             }
         }
@@ -1003,7 +1106,7 @@ static inline int find_dir_in_subdirs(const char *base, const char *this, void (
 
     DIR *dir = opendir(this);
     if(!dir) {
-        error("Cannot read cgroups directory '%s'", base);
+        error("CGROUP: cannot read directory '%s'", base);
         return ret;
     }
     ret = 1;
@@ -1109,7 +1212,7 @@ static inline void find_all_cgroups() {
         if(find_dir_in_subdirs(cgroup_cpuacct_base, NULL, found_subdir_in_dir) == -1) {
             cgroup_enable_cpuacct_stat =
             cgroup_enable_cpuacct_usage = CONFIG_BOOLEAN_NO;
-            error("disabled CGROUP cpu statistics.");
+            error("CGROUP: disabled cpu statistics.");
         }
     }
 
@@ -1121,7 +1224,7 @@ static inline void find_all_cgroups() {
             cgroup_enable_blkio_throttle_ops =
             cgroup_enable_blkio_merged_ops =
             cgroup_enable_blkio_queued_ops = CONFIG_BOOLEAN_NO;
-            error("disabled CGROUP blkio statistics.");
+            error("CGROUP: disabled blkio statistics.");
         }
     }
 
@@ -1131,14 +1234,14 @@ static inline void find_all_cgroups() {
             cgroup_enable_detailed_memory =
             cgroup_enable_swap =
             cgroup_enable_memory_failcnt = CONFIG_BOOLEAN_NO;
-            error("disabled CGROUP memory statistics.");
+            error("CGROUP: disabled memory statistics.");
         }
     }
 
     if(cgroup_search_in_devices) {
         if(find_dir_in_subdirs(cgroup_devices_base, NULL, found_subdir_in_dir) == -1) {
             cgroup_search_in_devices = 0;
-            error("disabled CGROUP devices statistics.");
+            error("CGROUP: disabled devices statistics.");
         }
     }
 
@@ -1292,7 +1395,6 @@ static inline void find_all_cgroups() {
     }
 
     debug(D_CGROUP, "done searching for cgroups");
-    return;
 }
 
 // ----------------------------------------------------------------------------
@@ -1358,6 +1460,8 @@ void update_systemd_services_charts(
                     , "services.cpu"
                     , title
                     , "%"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1380,6 +1484,8 @@ void update_systemd_services_charts(
                     , (cgroup_used_memory_without_cache) ? "Systemd Services Used Memory without Cache"
                                                          : "Systemd Services Used Memory"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 10
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1401,6 +1507,8 @@ void update_systemd_services_charts(
                     , "services.mem_rss"
                     , "Systemd Services RSS Memory"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 20
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1420,6 +1528,8 @@ void update_systemd_services_charts(
                     , "services.mem_mapped"
                     , "Systemd Services Mapped Memory"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 30
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1439,6 +1549,8 @@ void update_systemd_services_charts(
                     , "services.mem_cache"
                     , "Systemd Services Cache Memory"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 40
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1458,6 +1570,8 @@ void update_systemd_services_charts(
                     , "services.mem_writeback"
                     , "Systemd Services Writeback Memory"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 50
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1477,6 +1591,8 @@ void update_systemd_services_charts(
                     , "services.mem_pgfault"
                     , "Systemd Services Memory Minor Page Faults"
                     , "MB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 60
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1495,6 +1611,8 @@ void update_systemd_services_charts(
                     , "services.mem_pgmajfault"
                     , "Systemd Services Memory Major Page Faults"
                     , "MB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 70
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1514,6 +1632,8 @@ void update_systemd_services_charts(
                     , "services.mem_pgpgin"
                     , "Systemd Services Memory Charging Activity"
                     , "MB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 80
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1533,6 +1653,8 @@ void update_systemd_services_charts(
                     , "services.mem_pgpgout"
                     , "Systemd Services Memory Uncharging Activity"
                     , "MB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 90
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1554,6 +1676,8 @@ void update_systemd_services_charts(
                     , "services.mem_failcnt"
                     , "Systemd Services Memory Limit Failures"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 110
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1575,6 +1699,8 @@ void update_systemd_services_charts(
                     , "services.swap_usage"
                     , "Systemd Services Swap Memory Used"
                     , "MB"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 100
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1596,6 +1722,8 @@ void update_systemd_services_charts(
                     , "services.io_read"
                     , "Systemd Services Disk Read Bandwidth"
                     , "KB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 120
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1615,6 +1743,8 @@ void update_systemd_services_charts(
                     , "services.io_write"
                     , "Systemd Services Disk Write Bandwidth"
                     , "KB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 130
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1636,6 +1766,8 @@ void update_systemd_services_charts(
                     , "services.io_ops_read"
                     , "Systemd Services Disk Read Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 140
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1655,6 +1787,8 @@ void update_systemd_services_charts(
                     , "services.io_ops_write"
                     , "Systemd Services Disk Write Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 150
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1676,6 +1810,8 @@ void update_systemd_services_charts(
                     , "services.throttle_io_read"
                     , "Systemd Services Throttle Disk Read Bandwidth"
                     , "KB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 160
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1695,6 +1831,8 @@ void update_systemd_services_charts(
                     , "services.throttle_io_write"
                     , "Systemd Services Throttle Disk Write Bandwidth"
                     , "KB/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 170
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1716,6 +1854,8 @@ void update_systemd_services_charts(
                     , "services.throttle_io_ops_read"
                     , "Systemd Services Throttle Disk Read Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 180
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1735,6 +1875,8 @@ void update_systemd_services_charts(
                     , "services.throttle_io_ops_write"
                     , "Systemd Services Throttle Disk Write Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 190
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1756,6 +1898,8 @@ void update_systemd_services_charts(
                     , "services.queued_io_ops_read"
                     , "Systemd Services Queued Disk Read Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 200
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1775,6 +1919,8 @@ void update_systemd_services_charts(
                     , "services.queued_io_ops_write"
                     , "Systemd Services Queued Disk Write Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 210
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1796,6 +1942,8 @@ void update_systemd_services_charts(
                     , "services.merged_io_ops_read"
                     , "Systemd Services Merged Disk Read Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 220
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -1815,6 +1963,8 @@ void update_systemd_services_charts(
                     , "services.merged_io_ops_write"
                     , "Systemd Services Merged Disk Write Operations"
                     , "operations/s"
+                    , "cgroup"
+                    , "systemd"
                     , CHART_PRIORITY_SYSTEMD_SERVICES + 230
                     , update_every
                     , RRDSET_TYPE_STACKED
@@ -2095,6 +2245,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.cpu"
                         , title
                         , "%"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS
                         , update_every
                         , RRDSET_TYPE_STACKED
@@ -2126,6 +2278,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.cpu_per_core"
                         , title
                         , "%"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 100
                         , update_every
                         , RRDSET_TYPE_STACKED
@@ -2158,6 +2312,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.mem"
                         , title
                         , "MB"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 210
                         , update_every
                         , RRDSET_TYPE_STACKED
@@ -2196,6 +2352,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.writeback"
                         , title
                         , "MB"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 300
                         , update_every
                         , RRDSET_TYPE_AREA
@@ -2226,6 +2384,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.mem_activity"
                         , title
                         , "MB/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 400
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2252,6 +2412,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.pgfaults"
                         , title
                         , "MB/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 500
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2280,6 +2442,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.mem_usage"
                         , title
                         , "MB"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 200
                         , update_every
                         , RRDSET_TYPE_STACKED
@@ -2308,6 +2472,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.mem_failcnt"
                         , title
                         , "count"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 250
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2334,6 +2500,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.io"
                         , title
                         , "KB/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 1200
                         , update_every
                         , RRDSET_TYPE_AREA
@@ -2362,6 +2530,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.serviced_ops"
                         , title
                         , "operations/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 1200
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2390,6 +2560,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.throttle_io"
                         , title
                         , "KB/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 1200
                         , update_every
                         , RRDSET_TYPE_AREA
@@ -2418,6 +2590,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.throttle_serviced_ops"
                         , title
                         , "operations/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 1200
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2446,6 +2620,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.queued_ops"
                         , title
                         , "operations"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 2000
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2474,6 +2650,8 @@ void update_cgroup_charts(int update_every) {
                         , "cgroup.merged_ops"
                         , title
                         , "operations/s"
+                        , "cgroup"
+                        , "default"
                         , CHART_PRIORITY_CONTAINERS + 2100
                         , update_every
                         , RRDSET_TYPE_LINE
@@ -2504,16 +2682,17 @@ void update_cgroup_charts(int update_every) {
 // ----------------------------------------------------------------------------
 // cgroups main
 
-void *cgroups_main(void *ptr) {
+static void cgroup_main_cleanup(void *ptr) {
     struct netdata_static_thread *static_thread = (struct netdata_static_thread *)ptr;
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
 
-    info("CGROUP Plugin thread created with task id %d", gettid());
+    info("cleaning up...");
 
-    if(pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL) != 0)
-        error("Cannot set pthread cancel type to DEFERRED.");
+    static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;
+}
 
-    if(pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL) != 0)
-        error("Cannot set pthread cancel state to ENABLE.");
+void *cgroups_main(void *ptr) {
+    netdata_thread_cleanup_push(cgroup_main_cleanup, ptr);
 
     struct rusage thread;
 
@@ -2528,7 +2707,8 @@ void *cgroups_main(void *ptr) {
     heartbeat_init(&hb);
     usec_t step = cgroup_update_every * USEC_PER_SEC;
     usec_t find_every = cgroup_check_for_new_every * USEC_PER_SEC, find_dt = 0;
-    for(;;) {
+
+    while(!netdata_exit) {
         usec_t hb_dt = heartbeat_next(&hb, step);
         if(unlikely(netdata_exit)) break;
 
@@ -2561,6 +2741,8 @@ void *cgroups_main(void *ptr) {
                         , NULL
                         , "NetData CGroups Plugin CPU usage"
                         , "milliseconds/s"
+                        , "cgroup"
+                        , "stats"
                         , 132000
                         , cgroup_update_every
                         , RRDSET_TYPE_STACKED
@@ -2578,9 +2760,6 @@ void *cgroups_main(void *ptr) {
         }
     }
 
-    info("CGROUP thread exiting");
-
-    static_thread->enabled = 0;
-    pthread_exit(NULL);
+    netdata_thread_cleanup_pop(1);
     return NULL;
 }

@@ -19,7 +19,10 @@ install:
 EOF
 
 run make clean
-run make -j${PROCESSORS}
+run make -j${SYSTEM_CPUS}
 run make install
 
-run strip ${NETDATA_INSTALL_PATH}/bin/fping
+if [ ${NETDATA_BUILD_WITH_DEBUG} -eq 0 ]
+then
+    run strip ${NETDATA_INSTALL_PATH}/bin/fping
+fi

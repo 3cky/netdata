@@ -37,6 +37,10 @@ if ENABLE_PLUGIN_FREEIPMI
 plugins_PROGRAMS += freeipmi.plugin
 endif
 
+if ENABLE_PLUGIN_CGROUP_NETWORK
+plugins_PROGRAMS += cgroup-network
+endif
+
 netdata_SOURCES = \
 	adaptive_resortable_list.c \
 	adaptive_resortable_list.h \
@@ -44,6 +48,8 @@ netdata_SOURCES = \
 	appconfig.h \
 	avl.c \
 	avl.h \
+	backend_prometheus.c \
+	backend_prometheus.h \
 	backends.c \
 	backends.h \
 	clocks.c \
@@ -64,6 +70,7 @@ netdata_SOURCES = \
 	health_json.c \
 	health_log.c \
 	inlined.h \
+	locks.c \
 	locks.h \
 	log.c \
 	log.h \
@@ -73,16 +80,10 @@ netdata_SOURCES = \
 	plugin_checks.h \
 	plugin_idlejitter.c \
 	plugin_idlejitter.h \
-	plugin_nfacct.c \
-	plugin_nfacct.h \
-	plugin_tc.c \
-	plugin_tc.h \
 	plugins_d.c \
 	plugins_d.h \
 	popen.c \
 	popen.h \
-	proc_self_mountinfo.c \
-	proc_self_mountinfo.h \
 	procfile.c \
 	procfile.h \
 	registry.c \
@@ -115,6 +116,8 @@ netdata_SOURCES = \
 	rrdset.c \
 	rrdsetvar.c \
 	rrdvar.c \
+	signals.c \
+	signals.h \
 	simple_pattern.c \
 	simple_pattern.h \
 	socket.c \
@@ -125,12 +128,12 @@ netdata_SOURCES = \
 	statsd.h \
 	storage_number.c \
 	storage_number.h \
-	sys_devices_system_edac_mc.c \
-	sys_devices_system_node.c \
-	sys_fs_cgroup.c \
+	threads.c \
+	threads.h \
 	unit_test.c \
 	unit_test.h \
-	url.c url.h \
+	url.c \
+	url.h \
 	web_api_old.c \
 	web_api_old.h \
 	web_api_v1.c \
@@ -156,6 +159,7 @@ netdata_SOURCES += \
 	zfs_common.c \
 	zfs_common.h \
 	freebsd_kstat_zfs.c \
+	freebsd_ipfw.c \
 	$(NULL)
 else
 if MACOS
@@ -168,11 +172,16 @@ netdata_SOURCES += \
 	$(NULL)
 else
 netdata_SOURCES += \
-	ipc.c ipc.h \
+	ipc.c \
+	ipc.h \
+	plugin_nfacct.c \
+	plugin_nfacct.h \
 	plugin_proc.c \
 	plugin_proc.h \
 	plugin_proc_diskspace.c \
 	plugin_proc_diskspace.h \
+	plugin_tc.c \
+	plugin_tc.h \
 	proc_diskstats.c \
 	proc_interrupts.c \
 	proc_softirqs.c \
@@ -185,9 +194,13 @@ netdata_SOURCES += \
 	proc_net_rpc_nfsd.c \
 	proc_net_snmp.c \
 	proc_net_snmp6.c \
+	proc_net_sockstat.c \
+	proc_net_sockstat6.c \
 	proc_net_softnet_stat.c \
 	proc_net_stat_conntrack.c \
 	proc_net_stat_synproxy.c \
+	proc_self_mountinfo.c \
+	proc_self_mountinfo.h \
 	zfs_common.c \
     zfs_common.h \
 	proc_spl_kstat_zfs.c \
@@ -196,6 +209,10 @@ netdata_SOURCES += \
 	proc_vmstat.c \
 	proc_uptime.c \
 	sys_kernel_mm_ksm.c \
+	sys_devices_system_edac_mc.c \
+	sys_devices_system_node.c \
+	sys_fs_cgroup.c \
+	sys_fs_btrfs.c \
 	$(NULL)
 endif
 endif
@@ -209,18 +226,32 @@ netdata_LDADD = \
 
 apps_plugin_SOURCES = \
 	apps_plugin.c \
-	avl.c avl.h \
-	clocks.c clocks.h \
-	common.c common.h \
+	avl.c \
+	avl.h \
+	clocks.c \
+	clocks.h \
+	common.c \
+	common.h \
 	inlined.h \
+	locks.c \
+	locks.h \
 	log.c log.h \
-	procfile.c procfile.h \
-	web_buffer.c web_buffer.h \
+	procfile.c \
+	procfile.h \
+	threads.c \
+	threads.h \
+	web_buffer.c \
+	web_buffer.h \
 	$(NULL)
 
 if FREEBSD
 apps_plugin_SOURCES += \
 	plugin_freebsd.h \
+	$(NULL)
+else
+apps_plugin_SOURCES += \
+	adaptive_resortable_list.c \
+	adaptive_resortable_list.h \
 	$(NULL)
 endif
 
@@ -231,13 +262,46 @@ apps_plugin_LDADD = \
 
 freeipmi_plugin_SOURCES = \
 	freeipmi_plugin.c \
-	clocks.c clocks.h \
-	common.c common.h \
+	clocks.c \
+	clocks.h \
+	common.c \
+	common.h \
 	inlined.h \
+	locks.c \
+	locks.h \
 	log.c log.h \
-	procfile.c procfile.h \
+	procfile.c \
+	procfile.h \
+	threads.c \
+	threads.h \
 	$(NULL)
 
 freeipmi_plugin_LDADD = \
 	$(OPTIONAL_IPMIMONITORING_LIBS) \
+	$(NULL)
+
+cgroup_network_SOURCES = \
+    cgroup-network.c \
+	clocks.c \
+	clocks.h \
+    common.c \
+    common.h \
+    inlined.h \
+	locks.c \
+	locks.h \
+    log.c \
+    log.h \
+	procfile.c \
+	procfile.h \
+	popen.c \
+	popen.h \
+	signals.c \
+	signals.h \
+	threads.c \
+	threads.h \
+    $(NULL)
+
+cgroup_network_LDADD = \
+	$(OPTIONAL_MATH_LIBS) \
+	$(OPTIONAL_LIBCAP_LIBS) \
 	$(NULL)

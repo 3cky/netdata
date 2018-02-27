@@ -27,10 +27,10 @@ static void registry_set_cookie(struct web_client *w, const char *guid) {
     struct tm etmbuf, *etm = gmtime_r(&et, &etmbuf);
     strftime(edate, sizeof(edate), "%a, %d %b %Y %H:%M:%S %Z", etm);
 
-    snprintfz(w->cookie1, COOKIE_MAX, NETDATA_REGISTRY_COOKIE_NAME "=%s; Expires=%s", guid, edate);
+    snprintfz(w->cookie1, NETDATA_WEB_REQUEST_COOKIE_SIZE, NETDATA_REGISTRY_COOKIE_NAME "=%s; Expires=%s", guid, edate);
 
     if(registry.registry_domain && registry.registry_domain[0])
-        snprintfz(w->cookie2, COOKIE_MAX, NETDATA_REGISTRY_COOKIE_NAME "=%s; Domain=%s; Expires=%s", guid, registry.registry_domain, edate);
+        snprintfz(w->cookie2, NETDATA_WEB_REQUEST_COOKIE_SIZE, NETDATA_REGISTRY_COOKIE_NAME "=%s; Domain=%s; Expires=%s", guid, registry.registry_domain, edate);
 }
 
 static inline void registry_set_person_cookie(struct web_client *w, REGISTRY_PERSON *p) {
@@ -323,11 +323,21 @@ void registry_statistics(void) {
 
     static RRDSET *sts = NULL, *stc = NULL, *stm = NULL;
 
-    if(!sts) sts = rrdset_find_localhost("netdata.registry_sessions");
-    if(!sts) {
-        sts = rrdset_create_localhost("netdata", "registry_sessions", NULL, "registry", NULL
-                                      , "NetData Registry Sessions", "session", 131000, localhost->rrd_update_every
-                                      , RRDSET_TYPE_LINE);
+    if(unlikely(!sts)) {
+        sts = rrdset_create_localhost(
+                "netdata"
+                , "registry_sessions"
+                , NULL
+                , "registry"
+                , NULL
+                , "NetData Registry Sessions"
+                , "session"
+                , "registry"
+                , "stats"
+                , 131000
+                , localhost->rrd_update_every
+                , RRDSET_TYPE_LINE
+        );
 
         rrddim_add(sts, "sessions",  NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
     }
@@ -338,10 +348,21 @@ void registry_statistics(void) {
 
     // ------------------------------------------------------------------------
 
-    if(!stc) stc = rrdset_find_localhost("netdata.registry_entries");
-    if(!stc) {
-        stc = rrdset_create_localhost("netdata", "registry_entries", NULL, "registry", NULL, "NetData Registry Entries"
-                                      , "entries", 131100, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+    if(unlikely(!stc)) {
+        stc = rrdset_create_localhost(
+                "netdata"
+                , "registry_entries"
+                , NULL
+                , "registry"
+                , NULL
+                , "NetData Registry Entries"
+                , "entries"
+                , "registry"
+                , "stats"
+                , 131100
+                , localhost->rrd_update_every
+                , RRDSET_TYPE_LINE
+        );
 
         rrddim_add(stc, "persons",        NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
         rrddim_add(stc, "machines",       NULL,  1, 1, RRD_ALGORITHM_ABSOLUTE);
@@ -360,10 +381,21 @@ void registry_statistics(void) {
 
     // ------------------------------------------------------------------------
 
-    if(!stm) stm = rrdset_find_localhost("netdata.registry_mem");
-    if(!stm) {
-        stm = rrdset_create_localhost("netdata", "registry_mem", NULL, "registry", NULL, "NetData Registry Memory", "KB"
-                                      , 131300, localhost->rrd_update_every, RRDSET_TYPE_STACKED);
+    if(unlikely(!stm)) {
+        stm = rrdset_create_localhost(
+                "netdata"
+                , "registry_mem"
+                , NULL
+                , "registry"
+                , NULL
+                , "NetData Registry Memory"
+                , "KB"
+                , "registry"
+                , "stats"
+                , 131300
+                , localhost->rrd_update_every
+                , RRDSET_TYPE_STACKED
+        );
 
         rrddim_add(stm, "persons",        NULL,  1, 1024, RRD_ALGORITHM_ABSOLUTE);
         rrddim_add(stm, "machines",       NULL,  1, 1024, RRD_ALGORITHM_ABSOLUTE);

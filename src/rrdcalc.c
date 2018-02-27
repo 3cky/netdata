@@ -4,7 +4,7 @@
 // ----------------------------------------------------------------------------
 // RRDCALC management
 
-inline const char *rrdcalc_status2string(int status) {
+inline const char *rrdcalc_status2string(RRDCALC_STATUS status) {
     switch(status) {
         case RRDCALC_STATUS_REMOVED:
             return "REMOVED";
@@ -34,7 +34,9 @@ inline const char *rrdcalc_status2string(int status) {
 }
 
 static void rrdsetcalc_link(RRDSET *st, RRDCALC *rc) {
-    debug(D_HEALTH, "Health linking alarm '%s.%s' to chart '%s' of host '%s'", rc->chart?rc->chart:"NOCHART", rc->name, st->id, st->rrdhost->hostname);
+    RRDHOST *host = st->rrdhost;
+
+    debug(D_HEALTH, "Health linking alarm '%s.%s' to chart '%s' of host '%s'", rc->chart?rc->chart:"NOCHART", rc->name, st->id, host->hostname);
 
     rc->last_status_change = now_realtime_sec();
     rc->rrdset = st;
@@ -53,31 +55,31 @@ static void rrdsetcalc_link(RRDSET *st, RRDCALC *rc) {
     }
 
     if(!isnan(rc->green) && isnan(st->green)) {
-        debug(D_HEALTH, "Health alarm '%s.%s' green threshold set from %Lf to %Lf.", rc->rrdset->id, rc->name, rc->rrdset->green, rc->green);
+        debug(D_HEALTH, "Health alarm '%s.%s' green threshold set from " CALCULATED_NUMBER_FORMAT_AUTO " to " CALCULATED_NUMBER_FORMAT_AUTO ".", rc->rrdset->id, rc->name, rc->rrdset->green, rc->green);
         st->green = rc->green;
     }
 
     if(!isnan(rc->red) && isnan(st->red)) {
-        debug(D_HEALTH, "Health alarm '%s.%s' red threshold set from %Lf to %Lf.", rc->rrdset->id, rc->name, rc->rrdset->red, rc->red);
+        debug(D_HEALTH, "Health alarm '%s.%s' red threshold set from " CALCULATED_NUMBER_FORMAT_AUTO " to " CALCULATED_NUMBER_FORMAT_AUTO ".", rc->rrdset->id, rc->name, rc->rrdset->red, rc->red);
         st->red = rc->red;
     }
 
-    rc->local  = rrdvar_create_and_index("local",  &st->variables_root_index, rc->name, RRDVAR_TYPE_CALCULATED, &rc->value);
-    rc->family = rrdvar_create_and_index("family", &st->rrdfamily->variables_root_index, rc->name, RRDVAR_TYPE_CALCULATED, &rc->value);
+    rc->local  = rrdvar_create_and_index("local",  &st->rrdvar_root_index, rc->name, RRDVAR_TYPE_CALCULATED, &rc->value);
+    rc->family = rrdvar_create_and_index("family", &st->rrdfamily->rrdvar_root_index, rc->name, RRDVAR_TYPE_CALCULATED, &rc->value);
 
     char fullname[RRDVAR_MAX_LENGTH + 1];
     snprintfz(fullname, RRDVAR_MAX_LENGTH, "%s.%s", st->id, rc->name);
-    rc->hostid   = rrdvar_create_and_index("host", &st->rrdhost->variables_root_index, fullname, RRDVAR_TYPE_CALCULATED, &rc->value);
+    rc->hostid   = rrdvar_create_and_index("host", &host->rrdvar_root_index, fullname, RRDVAR_TYPE_CALCULATED, &rc->value);
 
     snprintfz(fullname, RRDVAR_MAX_LENGTH, "%s.%s", st->name, rc->name);
-    rc->hostname = rrdvar_create_and_index("host", &st->rrdhost->variables_root_index, fullname, RRDVAR_TYPE_CALCULATED, &rc->value);
+    rc->hostname = rrdvar_create_and_index("host", &host->rrdvar_root_index, fullname, RRDVAR_TYPE_CALCULATED, &rc->value);
 
     if(!rc->units) rc->units = strdupz(st->units);
 
     {
         time_t now = now_realtime_sec();
         health_alarm_log(
-                st->rrdhost,
+                host,
                 rc->id,
                 rc->next_event_id++,
                 now,
@@ -110,10 +112,11 @@ static inline int rrdcalc_is_matching_this_rrdset(RRDCALC *rc, RRDSET *st) {
 
 // this has to be called while the RRDHOST is locked
 inline void rrdsetcalc_link_matching(RRDSET *st) {
+    RRDHOST *host = st->rrdhost;
     // debug(D_HEALTH, "find matching alarms for chart '%s'", st->id);
 
     RRDCALC *rc;
-    for(rc = st->rrdhost->alarms; rc ; rc = rc->next) {
+    for(rc = host->alarms; rc ; rc = rc->next) {
         if(unlikely(rc->rrdset))
             continue;
 
@@ -132,10 +135,12 @@ inline void rrdsetcalc_unlink(RRDCALC *rc) {
         return;
     }
 
+    RRDHOST *host = st->rrdhost;
+
     {
         time_t now = now_realtime_sec();
         health_alarm_log(
-                st->rrdhost,
+                host,
                 rc->id,
                 rc->next_event_id++,
                 now,
@@ -157,8 +162,6 @@ inline void rrdsetcalc_unlink(RRDCALC *rc) {
         );
     }
 
-    RRDHOST *host = st->rrdhost;
-
     debug(D_HEALTH, "Health unlinking alarm '%s.%s' from chart '%s' of host '%s'", rc->chart?rc->chart:"NOCHART", rc->name, st->id, host->hostname);
 
     // unlink it
@@ -173,16 +176,16 @@ inline void rrdsetcalc_unlink(RRDCALC *rc) {
 
     rc->rrdset_prev = rc->rrdset_next = NULL;
 
-    rrdvar_free(st->rrdhost, &st->variables_root_index, rc->local);
+    rrdvar_free(host, &st->rrdvar_root_index, rc->local);
     rc->local = NULL;
 
-    rrdvar_free(st->rrdhost, &st->rrdfamily->variables_root_index, rc->family);
+    rrdvar_free(host, &st->rrdfamily->rrdvar_root_index, rc->family);
     rc->family = NULL;
 
-    rrdvar_free(st->rrdhost, &st->rrdhost->variables_root_index, rc->hostid);
+    rrdvar_free(host, &host->rrdvar_root_index, rc->hostid);
     rc->hostid = NULL;
 
-    rrdvar_free(st->rrdhost, &st->rrdhost->variables_root_index, rc->hostname);
+    rrdvar_free(host, &host->rrdvar_root_index, rc->hostname);
     rc->hostname = NULL;
 
     rc->rrdset = NULL;
@@ -348,7 +351,7 @@ inline RRDCALC *rrdcalc_create(RRDHOST *host, RRDCALCTEMPLATE *rt, const char *c
             error("Health alarm '%s.%s': failed to re-parse critical expression '%s'", chart, rt->name, rt->critical->source);
     }
 
-    debug(D_HEALTH, "Health runtime added alarm '%s.%s': exec '%s', recipient '%s', green %Lf, red %Lf, lookup: group %d, after %d, before %d, options %u, dimensions '%s', update every %d, calculation '%s', warning '%s', critical '%s', source '%s', delay up %d, delay down %d, delay max %d, delay_multiplier %f",
+    debug(D_HEALTH, "Health runtime added alarm '%s.%s': exec '%s', recipient '%s', green " CALCULATED_NUMBER_FORMAT_AUTO ", red " CALCULATED_NUMBER_FORMAT_AUTO ", lookup: group %d, after %d, before %d, options %u, dimensions '%s', update every %d, calculation '%s', warning '%s', critical '%s', source '%s', delay up %d, delay down %d, delay max %d, delay_multiplier %f",
             (rc->chart)?rc->chart:"NOCHART",
             rc->name,
             (rc->exec)?rc->exec:"DEFAULT",
@@ -375,8 +378,27 @@ inline RRDCALC *rrdcalc_create(RRDHOST *host, RRDCALCTEMPLATE *rt, const char *c
     return rc;
 }
 
-void rrdcalc_free(RRDHOST *host, RRDCALC *rc) {
-    if(!rc) return;
+void rrdcalc_free(RRDCALC *rc) {
+    if(unlikely(!rc)) return;
+
+    expression_free(rc->calculation);
+    expression_free(rc->warning);
+    expression_free(rc->critical);
+
+    freez(rc->name);
+    freez(rc->chart);
+    freez(rc->family);
+    freez(rc->dimensions);
+    freez(rc->exec);
+    freez(rc->recipient);
+    freez(rc->source);
+    freez(rc->units);
+    freez(rc->info);
+    freez(rc);
+}
+
+void rrdcalc_unlink_and_free(RRDHOST *host, RRDCALC *rc) {
+    if(unlikely(!rc)) return;
 
     debug(D_HEALTH, "Health removing alarm '%s.%s' of host '%s'", rc->chart?rc->chart:"NOCHART", rc->name, host->hostname);
 
@@ -398,18 +420,5 @@ void rrdcalc_free(RRDHOST *host, RRDCALC *rc) {
             error("Cannot unlink alarm '%s.%s' from host '%s': not found", rc->chart?rc->chart:"NOCHART", rc->name, host->hostname);
     }
 
-    expression_free(rc->calculation);
-    expression_free(rc->warning);
-    expression_free(rc->critical);
-
-    freez(rc->name);
-    freez(rc->chart);
-    freez(rc->family);
-    freez(rc->dimensions);
-    freez(rc->exec);
-    freez(rc->recipient);
-    freez(rc->source);
-    freez(rc->units);
-    freez(rc->info);
-    freez(rc);
+    rrdcalc_free(rc);
 }

@@ -110,8 +110,8 @@ static int appconfig_section_compare(void *a, void *b) {
     else return strcmp(((struct section *)a)->name, ((struct section *)b)->name);
 }
 
-#define appconfig_index_add(root, cfg) (struct section *)avl_insert_lock(&root->index, (avl *)(cfg))
-#define appconfig_index_del(root, cfg) (struct section *)avl_remove_lock(&root->index, (avl *)(cfg))
+#define appconfig_index_add(root, cfg) (struct section *)avl_insert_lock(&(root)->index, (avl *)(cfg))
+#define appconfig_index_del(root, cfg) (struct section *)avl_remove_lock(&(root)->index, (avl *)(cfg))
 
 static struct section *appconfig_index_find(struct config *root, const char *name, uint32_t hash) {
     struct section tmp;
@@ -214,7 +214,8 @@ int appconfig_move(struct config *root, const char *section_old, const char *nam
     if(!co_new) co_new = appconfig_section_create(root, section_new);
 
     config_section_wrlock(co_old);
-    config_section_wrlock(co_new);
+    if(co_old != co_new)
+        config_section_wrlock(co_new);
 
     cv_old = appconfig_option_index_find(co_old, name_old, 0);
     if(!cv_old) goto cleanup;
@@ -251,7 +252,8 @@ int appconfig_move(struct config *root, const char *section_old, const char *nam
     ret = 0;
 
 cleanup:
-    config_section_unlock(co_new);
+    if(co_old != co_new)
+        config_section_unlock(co_new);
     config_section_unlock(co_old);
     return ret;
 }
@@ -295,10 +297,10 @@ long long appconfig_get_number(struct config *root, const char *section, const c
     return strtoll(s, NULL, 0);
 }
 
-long double appconfig_get_float(struct config *root, const char *section, const char *name, long double value)
+LONG_DOUBLE appconfig_get_float(struct config *root, const char *section, const char *name, LONG_DOUBLE value)
 {
     char buffer[100], *s;
-    sprintf(buffer, "%0.5Lf", value);
+    sprintf(buffer, "%0.5" LONG_DOUBLE_MODIFIER, value);
 
     s = appconfig_get(root, section, name, buffer);
     if(!s) return value;
@@ -315,7 +317,7 @@ int appconfig_get_boolean(struct config *root, const char *section, const char *
     s = appconfig_get(root, section, name, s);
     if(!s) return value;
 
-    if(!strcmp(s, "yes") || !strcmp(s, "auto") || !strcmp(s, "on demand")) return 1;
+    if(!strcasecmp(s, "yes") || !strcasecmp(s, "true") || !strcasecmp(s, "on") || !strcasecmp(s, "auto") || !strcasecmp(s, "on demand")) return 1;
     return 0;
 }
 
@@ -405,10 +407,10 @@ long long appconfig_set_number(struct config *root, const char *section, const c
     return value;
 }
 
-long double appconfig_set_float(struct config *root, const char *section, const char *name, long double value)
+LONG_DOUBLE appconfig_set_float(struct config *root, const char *section, const char *name, LONG_DOUBLE value)
 {
     char buffer[100];
-    sprintf(buffer, "%0.5Lf", value);
+    sprintf(buffer, "%0.5" LONG_DOUBLE_MODIFIER, value);
 
     appconfig_set(root, section, name, buffer);
 
@@ -565,6 +567,7 @@ void appconfig_generate(struct config *root, BUFFER *wb, int only_changed)
             else pri = 2;
 
             if(i == pri) {
+                int loaded = 0;
                 int used = 0;
                 int changed = 0;
                 int count = 0;
@@ -572,13 +575,14 @@ void appconfig_generate(struct config *root, BUFFER *wb, int only_changed)
                 config_section_wrlock(co);
                 for(cv = co->values; cv ; cv = cv->next) {
                     used += (cv->flags & CONFIG_VALUE_USED)?1:0;
+                    loaded += (cv->flags & CONFIG_VALUE_LOADED)?1:0;
                     changed += (cv->flags & CONFIG_VALUE_CHANGED)?1:0;
                     count++;
                 }
                 config_section_unlock(co);
 
                 if(!count) continue;
-                if(only_changed && !changed) continue;
+                if(only_changed && !changed && !loaded) continue;
 
                 if(!used) {
                     buffer_sprintf(wb, "\n# section '%s' is not used.", co->name);
@@ -592,7 +596,7 @@ void appconfig_generate(struct config *root, BUFFER *wb, int only_changed)
                     if(used && !(cv->flags & CONFIG_VALUE_USED)) {
                         buffer_sprintf(wb, "\n\t# option '%s' is not used.\n", cv->name);
                     }
-                    buffer_sprintf(wb, "\t%s%s = %s\n", ((!(cv->flags & CONFIG_VALUE_CHANGED)) && (cv->flags & CONFIG_VALUE_USED))?"# ":"", cv->name, cv->value);
+                    buffer_sprintf(wb, "\t%s%s = %s\n", ((!(cv->flags & CONFIG_VALUE_LOADED)) && (!(cv->flags & CONFIG_VALUE_CHANGED)) && (cv->flags & CONFIG_VALUE_USED))?"# ":"", cv->name, cv->value);
                 }
                 config_section_unlock(co);
             }

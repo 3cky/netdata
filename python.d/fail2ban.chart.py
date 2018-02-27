@@ -2,17 +2,20 @@
 # Description: fail2ban log netdata python.d module
 # Author: l2isbad
 
+import bisect
+
+from glob import glob
 from re import compile as r_compile
 from os import access as is_accessible, R_OK
 from os.path import isdir, getsize
-from glob import glob
-import bisect
-from base import LogService
+
+
+from bases.FrameworkServices.LogService import LogService
 
 priority = 60000
 retries = 60
-REGEX_JAILS = r_compile(r'\[([A-Za-z-_0-9]+)][^\[\]]*?(?<!# )enabled = (?:(true|false))')
-REGEX_DATA = r_compile(r'\[(?P<jail>[A-Za-z-_0-9]+)\] (?P<action>(?:(U|B)))[a-z]+ (?P<ipaddr>\d{1,3}(?:\.\d{1,3}){3})')
+REGEX_JAILS = r_compile(r'\[([a-zA-Z0-9_-]+)\][^\[\]]+?enabled\s+= (true|false)')
+REGEX_DATA = r_compile(r'\[(?P<jail>[A-Za-z-_0-9]+)\] (?P<action>U|B)[a-z]+ (?P<ipaddr>\d{1,3}(?:\.\d{1,3}){3})')
 ORDER = ['jails_bans', 'jails_in_jail']
 
 
@@ -98,7 +101,6 @@ class Service(LogService):
                 jails_list.append(jail)
             elif status == 'false' and jail in jails_list:
                 jails_list.remove(jail)
-
         # If for some reason parse failed we still can START with default jails_list.
         jails_list = list(set(jails_list) - set(self.exclude.split()
                                                 if isinstance(self.exclude, str) else list())) or ['ssh']
@@ -181,9 +183,9 @@ def find_jails_in_files(list_of_files, print_error):
     jails_list = list()
     for conf in list_of_files:
         if is_accessible(conf, R_OK):
-            with open(conf, 'rt') as conf:
-                raw_data = conf.read()
-            data = ' '.join(raw_data.split())
+            with open(conf, 'rt') as f:
+                raw_data = f.readlines()
+            data = ' '.join(line for line in raw_data if line.startswith(('[', 'enabled')))
             jails_list.extend(REGEX_JAILS.findall(data))
         else:
             print_error('%s is not readable or not exist' % conf)

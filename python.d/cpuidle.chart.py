@@ -5,14 +5,15 @@
 import glob
 import os
 import platform
-import time
-from base import SimpleService
+
+from bases.FrameworkServices.SimpleService import SimpleService
 
 import ctypes
 syscall = ctypes.CDLL('libc.so.6').syscall
 
 # default module values (can be overridden per job in `config`)
 # update_every = 2
+
 
 class Service(SimpleService):
     def __init__(self, configuration=None, name=None):
@@ -24,10 +25,12 @@ class Service(SimpleService):
         SimpleService.__init__(self, configuration=configuration, name=name)
         self.order = []
         self.definitions = {}
-        self._orig_name = ""
+        self.fake_name = 'cpu'
         self.assignment = {}
+        self.last_schedstat = None
 
-    def __gettid(self):
+    @staticmethod
+    def __gettid():
         # This is horrendous. We need the *thread id* (not the *process id*),
         # but there's no Python standard library way of doing that. If you need
         # to enable this module on a non-x86 machine type, you'll have to find
@@ -42,13 +45,13 @@ class Service(SimpleService):
         tid = syscall(syscalls[platform.machine()])
         return tid
 
-    def __wake_cpus(self):
+    def __wake_cpus(self, cpus):
         # Requires Python 3.3+. This will "tickle" each CPU to force it to
         # update its idle counters.
         if hasattr(os, 'sched_setaffinity'):
             pid = self.__gettid()
             save_affinity = os.sched_getaffinity(pid)
-            for idx in range(0, len(self.assignment)):
+            for idx in cpus:
                 os.sched_setaffinity(pid, [idx])
                 os.sched_getaffinity(pid)
             os.sched_setaffinity(pid, save_affinity)
@@ -67,13 +70,30 @@ class Service(SimpleService):
     def _get_data(self):
         results = {}
 
-        # This line is critical for the stats to update. If we don't "tickle"
-        # all the CPUs, then all the counters stop counting.
-        self.__wake_cpus()
-
         # Use the kernel scheduler stats to determine how much time was spent
         # in C0 (active).
         schedstat = self.__read_schedstat()
+
+        # Determine if any of the CPUs are idle. If they are, then we need to
+        # tickle them in order to update their C-state residency statistics.
+        if self.last_schedstat is None:
+            needs_tickle = list(self.assignment.keys())
+        else:
+            needs_tickle = []
+            for cpu, active_time in self.last_schedstat.items():
+                delta = schedstat[cpu] - active_time
+                if delta < 1:
+                    needs_tickle.append(cpu)
+
+        if needs_tickle:
+            # This line is critical for the stats to update. If we don't "tickle"
+            # idle CPUs, then the counters for those CPUs stop counting.
+            self.__wake_cpus([int(cpu[3:]) for cpu in needs_tickle])
+
+            # Re-read schedstat now that we've tickled any idlers.
+            schedstat = self.__read_schedstat()
+
+        self.last_schedstat = schedstat
 
         for cpu, metrics in self.assignment.items():
             update_time = schedstat[cpu]
@@ -90,8 +110,6 @@ class Service(SimpleService):
             self.error("Cannot get thread ID. Stats would be completely broken.")
             return False
 
-        self._orig_name = self.chart_name
-
         for path in sorted(glob.glob(self.sys_dir + '/cpu*/cpuidle/state*/name')):
             # ['', 'sys', 'devices', 'system', 'cpu', 'cpu0', 'cpuidle', 'state3', 'name']
             path_elem = path.split('/')
@@ -104,7 +122,7 @@ class Service(SimpleService):
                 self.order.append(orderid)
                 active_name = '%s_active_time' % (cpu,)
                 self.definitions[orderid] = {
-                    'options': [None, 'C-state residency', 'time%', 'cpuidle', None, 'stacked'],
+                    'options': [None, 'C-state residency', 'time%', 'cpuidle', 'cpuidle.cpuidle', 'stacked'],
                     'lines': [
                         [active_name, 'C0 (active)', 'percentage-of-incremental-row', 1, 1],
                     ],
@@ -128,16 +146,3 @@ class Service(SimpleService):
 
         return True
 
-    def create(self):
-        self.chart_name = "cpu"
-        status = SimpleService.create(self)
-        self.chart_name = self._orig_name
-        return status
-
-    def update(self, interval):
-        self.chart_name = "cpu"
-        status = SimpleService.update(self, interval=interval)
-        self.chart_name = self._orig_name
-        return status
-
-# vim: set ts=4 sts=4 sw=4 et:

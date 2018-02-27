@@ -17,6 +17,8 @@ extern int do_vm_loadavg(int update_every, usec_t dt);
 extern int do_vm_vmtotal(int update_every, usec_t dt);
 extern int do_kern_cp_time(int update_every, usec_t dt);
 extern int do_kern_cp_times(int update_every, usec_t dt);
+extern int do_dev_cpu_temperature(int update_every, usec_t dt);
+extern int do_dev_cpu_0_freq(int update_every, usec_t dt);
 extern int do_hw_intcnt(int update_every, usec_t dt);
 extern int do_vm_stats_sys_v_intr(int update_every, usec_t dt);
 extern int do_vm_stats_sys_v_soft(int update_every, usec_t dt);
@@ -42,6 +44,8 @@ extern int do_getifaddrs(int update_every, usec_t dt);
 extern int do_getmntinfo(int update_every, usec_t dt);
 extern int do_kern_devstat(int update_every, usec_t dt);
 extern int do_kstat_zfs_misc_arcstats(int update_every, usec_t dt);
+extern int do_kstat_zfs_misc_zio_trim(int update_every, usec_t dt);
+extern int do_ipfw(int update_every, usec_t dt);
 
 #define GETSYSCTL_MIB(name, mib) getsysctl_mib(name, mib, sizeof(mib)/sizeof(int))
 

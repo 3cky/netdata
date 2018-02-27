@@ -1,4 +1,4 @@
-# netdata [![Build Status](https://travis-ci.org/firehol/netdata.svg?branch=master)](https://travis-ci.org/firehol/netdata) [![Coverity Scan Build Status](https://scan.coverity.com/projects/9140/badge.svg)](https://scan.coverity.com/projects/firehol-netdata) [![Codacy Badge](https://api.codacy.com/project/badge/Grade/a994873f30d045b9b4b83606c3eb3498)](https://www.codacy.com/app/netdata/netdata?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=firehol/netdata&amp;utm_campaign=Badge_Grade) [![Code Climate](https://codeclimate.com/github/firehol/netdata/badges/gpa.svg)](https://codeclimate.com/github/firehol/netdata) [![license](https://img.shields.io/github/license/firehol/netdata.svg)](LICENSE)
+# netdata [![Build Status](https://travis-ci.org/firehol/netdata.svg?branch=master)](https://travis-ci.org/firehol/netdata) [![Coverity Scan Build Status](https://scan.coverity.com/projects/9140/badge.svg)](https://scan.coverity.com/projects/firehol-netdata) [![Codacy Badge](https://api.codacy.com/project/badge/Grade/a994873f30d045b9b4b83606c3eb3498)](https://www.codacy.com/app/netdata/netdata?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=firehol/netdata&amp;utm_campaign=Badge_Grade) [![Code Climate](https://codeclimate.com/github/firehol/netdata/badges/gpa.svg)](https://codeclimate.com/github/firehol/netdata) [![License: GPL v3+](https://img.shields.io/badge/License-GPL%20v3%2B-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 > *New to netdata? Here is a live demo: [http://my-netdata.io](http://my-netdata.io)*
 
 **netdata** is a system for **distributed real-time performance and health monitoring**.
@@ -29,22 +29,18 @@ netdata runs on **Linux**, **FreeBSD**, and **MacOS**.
 
 ## News
 
-<p align="center">
-Netdata is featured at <b><a href="https://octoverse.github.com/" target="_blank">GitHub's State Of The Octoverse 2016</a></b><br/>
-<a href="https://octoverse.github.com/" target="_blank"><img src="https://cloud.githubusercontent.com/assets/2662304/21743260/23ebe62c-d507-11e6-80c0-76b95f53e464.png"/></a>
-</p>
+`Dec 17th, 2017` - **[netdata v1.9.0 released!](https://github.com/firehol/netdata/releases)**
 
-`Mar 20th, 2017` - **[netdata v1.6.0 released!](https://github.com/firehol/netdata/releases)**
+A big release:
 
- - central netdata is here! headless collectors, proxies, streaming of metrics, etc.
- - [monitoring ephemeral nodes (auto-scaled VMs)](https://github.com/firehol/netdata/wiki/monitoring-ephemeral-nodes)
- - [monitoring ephemeral containers and VM guests](https://github.com/firehol/netdata/wiki/monitoring-ephemeral-containers)
- - [monitoring web servers](https://github.com/firehol/netdata/wiki/The-spectacles-of-a-web-server-log-file)
- - apps.plugin ported for FreeBSD
- - [monitoring IPMI](https://github.com/firehol/netdata/wiki/monitoring-IPMI)
- - dozens of new and improved plugins
- - dozens of new and improved alarms
- - dozens more improvements and performance optimizations
+ - dashboard snapshots, for loading / saving selected time-frames
+ - highlighted time-frames across all charts of the dashboard
+ - IP access lists for filtering access to netdata
+ - enhanced VMs and containers monitoring
+ - auto-scaling of chart units
+ - timezone conversion at the dashboard to allow comparing charts with server logs
+ - python.d.plugin rewritten
+ - dozens of more improvements, enhancements, features and compatibility fixes
 
 ---
 
@@ -56,50 +52,50 @@ Netdata is featured at <b><a href="https://octoverse.github.com/" target="_blank
 
  - **Stunning interactive bootstrap dashboards**<br/>
    mouse and touch friendly, in 2 themes: dark, light
-   
+
  - **Amazingly fast**<br/>
    responds to all queries in less than 0.5 ms per metric,
    even on low-end hardware
-   
+
  - **Highly efficient**<br/>
    collects thousands of metrics per server per second,
    with just 1% CPU utilization of a single core, a few MB of RAM and no disk I/O at all
-   
- - **Sophisticated alarming**<br/>
+
+ - **Sophisticated alerting**<br/>
    hundreds of alarms, **out of the box**!<br/>
    supports dynamic thresholds, hysteresis, alarm templates,
-   multiple role-based notification methods (such as email, slack.com,
-   pushover.net, pushbullet.com, telegram.org, twilio.com, messagebird.com)
-   
+   multiple role-based notification methods (such as email, slack.com, flock.com,
+   pushover.net, pushbullet.com, telegram.org, twilio.com, messagebird.com, kavenegar.com)
+
  - **Extensible**<br/>
    you can monitor anything you can get a metric for,
    using its Plugin API (anything can be a netdata plugin,
    BASH, python, perl, node.js, java, Go, ruby, etc)
-   
+
  - **Embeddable**<br/>
    it can run anywhere a Linux kernel runs (even IoT)
    and its charts can be embedded on your web pages too
-   
+
  - **Customizable**<br/>
    custom dashboards can be built using simple HTML (no javascript necessary)
-   
+
  - **Zero configuration**<br/>
    auto-detects everything, it can collect up to 5000 metrics
    per server out of the box
-   
+
  - **Zero dependencies**<br/>
    it is even its own web server, for its static web files and its web API
-   
+
  - **Zero maintenance**<br/>
    you just run it, it does the rest
-   
+
  - **scales to infinity**<br/>
    requiring minimal central resources
-   
+
  - **several operating modes**<br/>
    autonomous host monitoring, headless data collector, forwarding proxy, store and forward proxy, central multi-host monitoring, in all possible configurations.
    Each node may have different metrics retention policy and run with or without health monitoring.
-   
+
  - **time-series back-ends supported**<br/>
    can archive its metrics on `graphite`, `opentsdb`, `prometheus`, json document DBs, in the same or lower detail
    (lower: to prevent it from congesting these servers due to the amount of data collected)
@@ -215,6 +211,9 @@ This is a list of what it currently monitors:
 - **Redis databases**<br/>
   multiple servers, each showing: operations, hit rate, memory, keys, clients, slaves
 
+- **couchdb**<br/>
+  reads/writes, request methods, status codes, tasks, replication, per-db, etc
+
 - **mongodb**<br/>
   operations, clients, transactions, cursors, connections, asserts, locks, etc
 
@@ -229,6 +228,9 @@ This is a list of what it currently monitors:
 
 - **NSD name servers**<br/>
   queries, zones, protocols, query types, transfers, etc.
+
+- **PowerDNS**</br>
+  queries, answers, cache, latency, etc.
 
 - **Postfix email servers**<br/>
   message queue (entries, size)
@@ -274,8 +276,17 @@ This is a list of what it currently monitors:
 - **SNMP devices**<br/>
   can be monitored too (although you will need to configure these)
 
+- **chrony**</br>
+  frequencies, offsets, delays, etc.
+
+- **beanstalkd**</br>
+  global and per tube monitoring
+
 - **statsd**<br/>
   [netdata is a fully featured statsd server](https://github.com/firehol/netdata/wiki/statsd)
+
+- **ceph**<br/>
+  OSD usage, Pool usage, number of objects, etc.
 
 And you can extend it, by writing plugins that collect data from any source, using any computer language.
 
@@ -286,7 +297,7 @@ And you can extend it, by writing plugins that collect data from any source, usi
 This is a high level overview of netdata feature set and architecture.
 Click it to to interact with it (it has direct links to documentation).
 
-[![netdata-overview](https://cloud.githubusercontent.com/assets/2662304/26529478/104652ac-43c9-11e7-903f-edb9bb2ced24.png)](https://my-netdata.io/infographic.html)
+[![netdata-overview](https://user-images.githubusercontent.com/2662304/32415725-a4779606-c246-11e7-8985-2b350181aa27.png)](https://my-netdata.io/infographic.html)
 
 ---
 
@@ -307,6 +318,13 @@ It should run on **any Linux** system (including IoT). It has been tested on:
 - RedHat Enterprise Linux
 - SUSE
 - Ubuntu
+
+---
+
+## Interaction with netdata
+
+After installation, you can interact with netdata using **[CLI](https://github.com/firehol/netdata/wiki/Command-Line-Options)** and web dashboards.
+The default port of dashboard is 19999. To access the web dashboard on localhost, use: http://localhost:19999
 
 ---
 

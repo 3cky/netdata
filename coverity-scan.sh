@@ -1,4 +1,7 @@
-#/bin/bash
+#!/usr/bin/env bash
+
+cpus=$(grep ^processor </proc/cpuinfo| wc -l)
+[ -z "${cpus}" ] && cpus=1
 
 token=
 [ -f .coverity-token ] && token="$(<.coverity-token)"
@@ -30,11 +33,13 @@ make clean || exit 1
 [ -f netdata-coverity-analysis.tgz ] && \
 	rm netdata-coverity-analysis.tgz
 
-"${covbuild}" --dir cov-int make -j4 || exit 1
+"${covbuild}" --dir cov-int make -j${cpus} || exit 1
 
+echo >&2 "Compressing data..."
 tar czvf netdata-coverity-analysis.tgz cov-int || exit 1
 
-curl --form token="${token}" \
+echo >&2 "Sending analysis..."
+curl --progress-bar --form token="${token}" \
   --form email=costa@tsaousis.gr \
   --form file=@netdata-coverity-analysis.tgz \
   --form version="${version}" \

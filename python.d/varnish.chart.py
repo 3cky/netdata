@@ -2,230 +2,240 @@
 # Description:  varnish netdata python.d module
 # Author: l2isbad
 
-from base import SimpleService
-from re import compile
-from subprocess import Popen, PIPE
+import re
+
+from bases.collection import find_binary
+from bases.FrameworkServices.ExecutableService import ExecutableService
 
 # default module values (can be overridden per job in `config`)
 # update_every = 2
 priority = 60000
 retries = 60
 
-ORDER = ['session', 'hit_rate', 'chit_rate', 'expunge', 'threads', 'backend_health', 'memory_usage', 'bad', 'uptime']
+ORDER = ['session_connections', 'client_requests',
+         'all_time_hit_rate', 'current_poll_hit_rate', 'cached_objects_expired', 'cached_objects_nuked',
+         'threads_total', 'threads_statistics', 'threads_queue_len',
+         'backend_connections', 'backend_requests',
+         'esi_statistics',
+         'memory_usage',
+         'uptime']
 
-CHARTS = {'backend_health': 
-             {'lines': [['backend_conn', 'conn', 'incremental', 1, 1],
-                       ['backend_unhealthy', 'unhealthy', 'incremental', 1, 1],
-                       ['backend_busy', 'busy', 'incremental', 1, 1],
-                       ['backend_fail', 'fail', 'incremental', 1, 1],
-                       ['backend_reuse', 'reuse', 'incremental', 1, 1],
-                       ['backend_recycle', 'resycle', 'incremental', 1, 1],
-                       ['backend_toolate', 'toolate', 'incremental', 1, 1],
-                       ['backend_retry', 'retry', 'incremental', 1, 1],
-                       ['backend_req', 'req', 'incremental', 1, 1]],
-              'options': [None, 'Backend health', 'connections', 'Backend health', 'varnish.backend_traf', 'line']},
-          'bad': 
-             {'lines': [['sess_drop_b', None, 'incremental', 1, 1],
-                       ['backend_unhealthy_b', None, 'incremental', 1, 1],
-                       ['fetch_failed', None, 'incremental', 1, 1],
-                       ['backend_busy_b', None, 'incremental', 1, 1],
-                       ['threads_failed_b', None, 'incremental', 1, 1],
-                       ['threads_limited_b', None, 'incremental', 1, 1],
-                       ['threads_destroyed_b', None, 'incremental', 1, 1],
-                       ['thread_queue_len_b', 'queue_len', 'absolute', 1, 1],
-                       ['losthdr_b', None, 'incremental', 1, 1],
-                       ['esi_errors_b', None, 'incremental', 1, 1],
-                       ['esi_warnings_b', None, 'incremental', 1, 1],
-                       ['sess_fail_b', None, 'incremental', 1, 1],
-                       ['sc_pipe_overflow_b', None, 'incremental', 1, 1],
-                       ['sess_pipe_overflow_b', None, 'incremental', 1, 1]],
-              'options': [None, 'Misbehavior', 'problems', 'Problems summary', 'varnish.bad', 'line']},
-          'expunge':
-             {'lines': [['n_expired', 'expired', 'incremental', 1, 1],
-                       ['n_lru_nuked', 'lru_nuked', 'incremental', 1, 1]],
-              'options': [None, 'Object expunging', 'objects', 'Cache performance', 'varnish.expunge', 'line']},
-          'hit_rate': 
-             {'lines': [['cache_hit_perc', 'hit', 'absolute', 1, 100],
-                       ['cache_miss_perc', 'miss', 'absolute', 1, 100],
-                       ['cache_hitpass_perc', 'hitpass', 'absolute', 1, 100]],
-              'options': [None, 'All history hit rate ratio','percent', 'Cache performance', 'varnish.hit_rate', 'stacked']},
-          'chit_rate': 
-             {'lines': [['cache_hit_cperc', 'hit', 'absolute', 1, 100],
-                       ['cache_miss_cperc', 'miss', 'absolute', 1, 100],
-                       ['cache_hitpass_cperc', 'hitpass', 'absolute', 1, 100]],
-              'options': [None, 'Current poll hit rate ratio','percent', 'Cache performance', 'varnish.chit_rate', 'stacked']},
-          'memory_usage': 
-             {'lines': [['s0.g_space', 'available', 'absolute', 1, 1048576],
-                       ['s0.g_bytes', 'allocated', 'absolute', -1, 1048576]],
-              'options': [None, 'Memory usage', 'megabytes', 'Memory usage', 'varnish.memory_usage', 'stacked']},
-          'session': 
-             {'lines': [['sess_conn', 'sess_conn', 'incremental', 1, 1],
-                       ['client_req', 'client_requests', 'incremental', 1, 1],
-                       ['client_conn', 'client_conn', 'incremental', 1, 1],
-                       ['client_drop', 'client_drop', 'incremental', 1, 1],
-                       ['sess_dropped', 'sess_dropped', 'incremental', 1, 1]],
-              'options': [None, 'Sessions', 'units', 'Client metrics', 'varnish.session', 'line']},
-          'threads': 
-             {'lines': [['threads', None, 'absolute', 1, 1],
-                       ['threads_created', 'created', 'incremental', 1, 1],
-                       ['threads_failed', 'failed', 'incremental', 1, 1],
-                       ['threads_limited', 'limited', 'incremental', 1, 1],
-                       ['thread_queue_len', 'queue_len', 'incremental', 1, 1],
-                       ['sess_queued', 'sess_queued', 'incremental', 1, 1]],
-              'options': [None, 'Thread status', 'threads', 'Thread-related metrics', 'varnish.threads', 'line']},
-          'uptime': 
-             {'lines': [['uptime', None, 'absolute', 1, 1]],
-              'options': [None, 'Varnish uptime', 'seconds', 'Uptime', 'varnish.uptime', 'line']}
+CHARTS = {
+    'session_connections': {
+        'options': [None, 'Connections Statistics', 'connections/s',
+                    'client metrics', 'varnish.session_connection', 'line'],
+        'lines': [
+            ['sess_conn', 'accepted', 'incremental'],
+            ['sess_dropped', 'dropped', 'incremental']
+        ]
+    },
+    'client_requests': {
+        'options': [None, 'Client Requests', 'requests/s',
+                    'client metrics', 'varnish.client_requests', 'line'],
+        'lines': [
+            ['client_req', 'received', 'incremental']
+        ]
+    },
+    'all_time_hit_rate': {
+        'options': [None, 'All History Hit Rate Ratio', 'percent', 'cache performance',
+                    'varnish.all_time_hit_rate', 'stacked'],
+        'lines': [
+            ['cache_hit', 'hit', 'percentage-of-absolute-row'],
+            ['cache_miss', 'miss', 'percentage-of-absolute-row'],
+            ['cache_hitpass', 'hitpass', 'percentage-of-absolute-row']]
+    },
+    'current_poll_hit_rate': {
+        'options': [None, 'Current Poll Hit Rate Ratio', 'percent', 'cache performance',
+                    'varnish.current_poll_hit_rate', 'stacked'],
+        'lines': [
+            ['cache_hit', 'hit', 'percentage-of-incremental-row'],
+            ['cache_miss', 'miss', 'percentage-of-incremental-row'],
+            ['cache_hitpass', 'hitpass', 'percentage-of-incremental-row']
+        ]
+    },
+    'cached_objects_expired': {
+        'options': [None, 'Expired Objects', 'expired/s', 'cache performance',
+                    'varnish.cached_objects_expired', 'line'],
+        'lines': [
+            ['n_expired', 'objects', 'incremental']
+        ]
+    },
+    'cached_objects_nuked': {
+        'options': [None, 'Least Recently Used Nuked Objects', 'nuked/s', 'cache performance',
+                    'varnish.cached_objects_nuked', 'line'],
+        'lines': [
+            ['n_lru_nuked', 'objects', 'incremental']
+        ]
+    },
+    'threads_total': {
+        'options': [None, 'Number Of Threads In All Pools', 'number', 'thread related metrics',
+                    'varnish.threads_total', 'line'],
+        'lines': [
+            ['threads', None, 'absolute']
+        ]
+    },
+    'threads_statistics': {
+        'options': [None, 'Threads Statistics', 'threads/s', 'thread related metrics',
+                    'varnish.threads_statistics', 'line'],
+        'lines': [
+            ['threads_created', 'created', 'incremental'],
+            ['threads_failed', 'failed', 'incremental'],
+            ['threads_limited', 'limited', 'incremental']
+        ]
+    },
+    'threads_queue_len': {
+        'options': [None, 'Current Queue Length', 'requests', 'thread related metrics',
+                    'varnish.threads_queue_len', 'line'],
+        'lines': [
+            ['thread_queue_len', 'in queue']
+        ]
+    },
+    'backend_connections': {
+        'options': [None, 'Backend Connections Statistics', 'connections/s', 'backend metrics',
+                    'varnish.backend_connections', 'line'],
+        'lines': [
+            ['backend_conn', 'successful', 'incremental'],
+            ['backend_unhealthy', 'unhealthy', 'incremental'],
+            ['backend_reuse', 'reused', 'incremental'],
+            ['backend_toolate', 'closed', 'incremental'],
+            ['backend_recycle', 'resycled', 'incremental'],
+            ['backend_fail', 'failed', 'incremental']
+        ]
+    },
+    'backend_requests': {
+        'options': [None, 'Requests To The Backend', 'requests/s', 'backend metrics',
+                    'varnish.backend_requests', 'line'],
+        'lines': [
+            ['backend_req', 'sent', 'incremental']
+        ]
+    },
+    'esi_statistics': {
+        'options': [None, 'ESI Statistics', 'problems/s', 'esi related metrics', 'varnish.esi_statistics', 'line'],
+        'lines': [
+            ['esi_errors', 'errors', 'incremental'],
+            ['esi_warnings', 'warnings', 'incremental']
+        ]
+    },
+    'memory_usage': {
+        'options': [None, 'Memory Usage', 'MB', 'memory usage', 'varnish.memory_usage', 'stacked'],
+        'lines': [
+            ['memory_free', 'free', 'absolute', 1, 1 << 20],
+            ['memory_allocated', 'allocated', 'absolute', 1, 1 << 20]]
+    },
+    'uptime': {
+        'lines': [
+            ['uptime', None, 'absolute']
+        ],
+        'options': [None, 'Uptime', 'seconds', 'uptime', 'varnish.uptime', 'line']
+    }
 }
 
 
-class Service(SimpleService):
+class Parser:
+    _backend_new = re.compile(r'VBE.([\d\w_.]+)\(.*?\).(beresp[\w_]+)\s+(\d+)')
+    _backend_old = re.compile(r'VBE\.[\d\w-]+\.([\w\d_]+).(beresp[\w_]+)\s+(\d+)')
+    _default = re.compile(r'([A-Z]+\.)?([\d\w_.]+)\s+(\d+)')
+
+    def __init__(self):
+        self.re_default = None
+        self.re_backend = None
+
+    def init(self, data):
+        data = ''.join(data)
+        parsed_main = Parser._default.findall(data)
+        if parsed_main:
+            self.re_default = Parser._default
+
+        parsed_backend = Parser._backend_new.findall(data)
+        if parsed_backend:
+            self.re_backend = Parser._backend_new
+        else:
+            parsed_backend = Parser._backend_old.findall(data)
+            if parsed_backend:
+                self.re_backend = Parser._backend_old
+
+    def server_stats(self, data):
+        return self.re_default.findall(''.join(data))
+
+    def backend_stats(self, data):
+        return self.re_backend.findall(''.join(data))
+
+
+class Service(ExecutableService):
     def __init__(self, configuration=None, name=None):
-        SimpleService.__init__(self, configuration=configuration, name=name)
-        self.varnish = self.find_binary('varnishstat')
-        self.rgx_all = compile(r'([A-Z]+\.)?([\d\w_.]+)\s+(\d+)')
-        # Could be
-        # VBE.boot.super_backend.pipe_hdrbyte (new)
-        # or
-        # VBE.default2(127.0.0.2,,81).bereq_bodybytes (old)
-        # Regex result: [('super_backend', 'beresp_hdrbytes', '0'), ('super_backend', 'beresp_bodybytes', '0')]
-        self.rgx_bck = (compile(r'VBE.([\d\w_.]+)\(.*?\).(beresp[\w_]+)\s+(\d+)'),
-                        compile(r'VBE\.[\d\w-]+\.([\w\d_]+).(beresp[\w_]+)\s+(\d+)'))
-        self.cache_prev = list()
+        ExecutableService.__init__(self, configuration=configuration, name=name)
+        self.order = ORDER
+        self.definitions = CHARTS
+        varnishstat = find_binary('varnishstat')
+        self.command = [varnishstat, '-1'] if varnishstat else None
+        self.parser = Parser()
 
     def check(self):
-        # Cant start without 'varnishstat' command
-        if not self.varnish:
-            self.error('Can\'t locate \'varnishstat\' binary or binary is not executable by netdata')
+        if not self.command:
+            self.error("Can't locate 'varnishstat' binary or binary is not executable by user netdata")
             return False
 
-        # If command is present and we can execute it we need to make sure..
-        # 1. STDOUT is not empty
+        # STDOUT is not empty
         reply = self._get_raw_data()
         if not reply:
-            self.error('No output from \'varnishstat\' (not enough privileges?)')
+            self.error("No output from 'varnishstat'. Not enough privileges?")
             return False
 
-        # 2. Output is parsable (list is not empty after regex findall)
-        is_parsable = self.rgx_all.findall(reply)
-        if not is_parsable:
-            self.error('Cant parse output...')
+        self.parser.init(reply)
+
+        # Output is parsable
+        if not self.parser.re_default:
+            self.error('Cant parse the output...')
             return False
 
-        # We need to find the right regex for backend parse
-        self.backend_list = self.rgx_bck[0].findall(reply)[::2]
-        if self.backend_list:
-            self.rgx_bck = self.rgx_bck[0]
-        else:
-            self.backend_list = self.rgx_bck[1].findall(reply)[::2]
-            self.rgx_bck = self.rgx_bck[1]
-
-        # We are about to start!
-        self.create_charts()
-
-        self.info('Plugin was started successfully')
+        if self.parser.re_backend:
+            backends = [b[0] for b in self.parser.backend_stats(reply)[::2]]
+            self.create_backends_charts(backends)
         return True
-     
-    def _get_raw_data(self):
-        try:
-            reply = Popen([self.varnish, '-1'], stdout=PIPE, stderr=PIPE, shell=False)
-        except OSError:
-            return None
 
-        raw_data = reply.communicate()[0]
-
-        if not raw_data:
-            return None
-
-        return raw_data.decode()
-
-    def _get_data(self):
+    def get_data(self):
         """
         Format data received from shell command
         :return: dict
         """
-        raw_data = self._get_raw_data()
-        data_all = self.rgx_all.findall(raw_data)
-        data_backend = self.rgx_bck.findall(raw_data)
-
-        if not data_all:
+        raw = self._get_raw_data()
+        if not raw:
             return None
 
-        # 1. ALL data from 'varnishstat -1'. t - type(MAIN, MEMPOOL etc)
-        to_netdata = dict([(k, int(v)) for t, k, v in data_all])
-        
-        # 2. ADD backend statistics
-        to_netdata.update(dict([('_'.join([n, k]), int(v)) for n, k, v in data_backend]))
+        data = dict()
+        server_stats = self.parser.server_stats(raw)
+        if not server_stats:
+            return None
 
-        # 3. ADD additional keys to dict
-        # 3.1 Cache hit/miss/hitpass OVERALL in percent
-        cache_summary = sum([to_netdata.get('cache_hit', 0), to_netdata.get('cache_miss', 0),
-                             to_netdata.get('cache_hitpass', 0)])
-        to_netdata['cache_hit_perc'] = find_percent(to_netdata.get('cache_hit', 0), cache_summary, 10000)
-        to_netdata['cache_miss_perc'] = find_percent(to_netdata.get('cache_miss', 0), cache_summary, 10000)
-        to_netdata['cache_hitpass_perc'] = find_percent(to_netdata.get('cache_hitpass', 0), cache_summary, 10000)
+        if self.parser.re_backend:
+            backend_stats = self.parser.backend_stats(raw)
+            data.update(dict(('_'.join([name, param]), value) for name, param, value in backend_stats))
 
-        # 3.2 Cache hit/miss/hitpass CURRENT in percent
-        if self.cache_prev:
-            cache_summary = sum([to_netdata.get('cache_hit', 0), to_netdata.get('cache_miss', 0),
-                                 to_netdata.get('cache_hitpass', 0)]) - sum(self.cache_prev)
-            to_netdata['cache_hit_cperc'] = find_percent(to_netdata.get('cache_hit', 0) - self.cache_prev[0], cache_summary, 10000)
-            to_netdata['cache_miss_cperc'] = find_percent(to_netdata.get('cache_miss', 0) - self.cache_prev[1], cache_summary, 10000)
-            to_netdata['cache_hitpass_cperc'] = find_percent(to_netdata.get('cache_hitpass', 0) - self.cache_prev[2], cache_summary, 10000)
-        else:
-            to_netdata['cache_hit_cperc'] = 0
-            to_netdata['cache_miss_cperc'] = 0
-            to_netdata['cache_hitpass_cperc'] = 0
+        data.update(dict((param, value) for _, param, value in server_stats))
 
-        self.cache_prev = [to_netdata.get('cache_hit', 0), to_netdata.get('cache_miss', 0), to_netdata.get('cache_hitpass', 0)]
+        data['memory_allocated'] = data['s0.g_bytes']
+        data['memory_free'] = data['s0.g_space']
 
-        # 3.3 Problems summary chart
-        for elem in ['backend_busy', 'backend_unhealthy', 'esi_errors', 'esi_warnings', 'losthdr', 'sess_drop', 'sc_pipe_overflow',
-                     'sess_fail', 'sess_pipe_overflow', 'threads_destroyed', 'threads_failed', 'threads_limited', 'thread_queue_len']:
-            if to_netdata.get(elem) is not None:
-                to_netdata[''.join([elem, '_b'])] = to_netdata.get(elem)
+        return data
 
-        # Ready steady go!
-        return to_netdata
+    def create_backends_charts(self, backends):
+        for backend in backends:
+            chart_name = ''.join([backend, '_response_statistics'])
+            title = 'Backend "{0}"'.format(backend.capitalize())
+            hdr_bytes = ''.join([backend, '_beresp_hdrbytes'])
+            body_bytes = ''.join([backend, '_beresp_bodybytes'])
 
-    def create_charts(self):
-        # If 'all_charts' is true...ALL charts are displayed. If no only default + 'extra_charts'
-        #if self.configuration.get('all_charts'):
-        #    self.order = EXTRA_ORDER
-        #else:
-        #    try:
-        #        extra_charts = list(filter(lambda chart: chart in EXTRA_ORDER, self.extra_charts.split()))
-        #    except (AttributeError, NameError, ValueError):
-        #        self.error('Extra charts disabled.')
-        #        extra_charts = []
-    
-        self.order = ORDER[:]
-        #self.order.extend(extra_charts)
+            chart = {
+                chart_name:
+                {
+                    'options': [None, title, 'kilobits/s', 'backend response statistics',
+                                'varnish.backend', 'area'],
+                    'lines': [
+                        [hdr_bytes, 'header', 'incremental', 8, 1000],
+                        [body_bytes, 'body', 'incremental', -8, 1000]
+                        ]
+                    }
+                }
 
-        # Create static charts
-        #self.definitions = {chart: values for chart, values in CHARTS.items() if chart in self.order}
-        self.definitions = CHARTS
- 
-        # Create dynamic backend charts
-        if self.backend_list:
-            for backend in self.backend_list:
-                self.order.insert(0, ''.join([backend[0], '_resp_stats']))
-                self.definitions.update({''.join([backend[0], '_resp_stats']): {
-                    'options': [None,
-                                '%s response statistics' % backend[0].capitalize(),
-                                "kilobit/s",
-                                'Backend response',
-                                'varnish.backend',
-                                'area'],
-                    'lines': [[''.join([backend[0], '_beresp_hdrbytes']),
-                               'header', 'incremental', 8, 1000],
-                              [''.join([backend[0], '_beresp_bodybytes']),
-                               'body', 'incremental', -8, 1000]]}})
-
-
-def find_percent(value1, value2, multiply):
-    # If value2 is 0 return 0
-    if not value2:
-        return 0
-    else:
-        return round(float(value1) / float(value2) * multiply)
+            self.order.insert(0, chart_name)
+            self.definitions.update(chart)

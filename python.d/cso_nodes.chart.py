@@ -40,7 +40,7 @@ CHARTS = {
         'options': [None, 'Connections/s', 'connections/s', 'DataSource (perf)', 'cso.datasource.perf', 'area'],
         'lines': [
             ['datasource.pool.picked', 'conn/s', 'incremental']
-        ]}, 
+        ]},
     'conn.service': {
         'options': [None, 'Connections', 'connections', 'Connections (all)', 'cso.conn.service', 'area'],
         'lines': [
@@ -78,6 +78,7 @@ CHARTS = {
             ['game.service.authz.active', 'active'],
             ['game.service.authz.total', 'total'],
             ['game.service.authz.active.m_5', 'durak'],
+            ['game.service.authz.active.m_9', 'gammon'],
             ['game.service.authz.active.m_11', 'poker']
         ]},
     'game.pool': {

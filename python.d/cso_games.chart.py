@@ -22,6 +22,7 @@ CHARTS = {
             ['game.service.authz.active', 'active'],
             ['game.service.authz.total', 'total'],
             ['game.service.authz.active.m_5', 'durak'],
+            ['game.service.authz.active.m_9', 'gammon'],
             ['game.service.authz.active.m_11', 'poker']
         ]},
     'game.bots': {

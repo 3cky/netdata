@@ -642,7 +642,9 @@ run find ./system/ -type f -a \! -name \*.in -a \! -name Makefile\* -a \! -name 
 # -----------------------------------------------------------------------------
 progress "Add user netdata to required user groups"
 
-add_netdata_user_and_group || run_failed "The installer does not run as root."
+homedir="${NETDATA_PREFIX}/var/lib/netdata"
+[ ! -z "${NETDATA_PREFIX}" ] && homedir="${NETDATA_PREFIX}"
+add_netdata_user_and_group "${homedir}" || run_failed "The installer does not run as root."
 
 
 # -----------------------------------------------------------------------------
@@ -1234,7 +1236,14 @@ cd "${REINSTALL_PWD}" || exit 1
 # signal netdata to start saving its database
 # this is handy if your database is big
 pids=\$(pidof netdata)
-[ ! -z "\${pids}" ] && kill -USR1 \${pids}
+do_not_start=
+if [ ! -z "\${pids}" ]
+    then
+    kill -USR1 \${pids}
+else
+    # netdata is currently not running, so do not start it after updating
+    do_not_start="--dont-start-it"
+fi
 
 tmp=
 if [ -t 2 ]
@@ -1305,7 +1314,7 @@ update() {
 
     emptyline
     info "Re-installing netdata..."
-    ${REINSTALL_COMMAND} --dont-wait >&3 2>&3 || failed "FAILED TO COMPILE/INSTALL NETDATA"
+    ${REINSTALL_COMMAND} --dont-wait \${do_not_start} >&3 2>&3 || failed "FAILED TO COMPILE/INSTALL NETDATA"
 
     [ ! -z "\${tmp}" ] && rm "\${tmp}" && tmp=
     return 0

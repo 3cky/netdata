@@ -32,6 +32,8 @@ dist_python_DATA = \
     go_expvar.chart.py \
     haproxy.chart.py \
     hddtemp.chart.py \
+    httpcheck.chart.py \
+    icecast.chart.py \
     ipfs.chart.py \
     isc_dhcpd.chart.py \
     mdstat.chart.py \
@@ -44,6 +46,7 @@ dist_python_DATA = \
     ntpd.chart.py \
     ovpn_status_log.chart.py \
     phpfpm.chart.py \
+    portcheck.chart.py \
     postfix.chart.py \
     postgres.chart.py \
     powerdns.chart.py \
@@ -52,9 +55,11 @@ dist_python_DATA = \
     retroshare.chart.py \
     samba.chart.py \
     sensors.chart.py \
+    springboot.chart.py \
     squid.chart.py \
     smartd_log.chart.py \
     tomcat.chart.py \
+    traefik.chart.py \
     varnish.chart.py \
     web_log.chart.py \
     cso_games.chart.py \

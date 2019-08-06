@@ -1,0 +1,61 @@
+# Files which shouldn't be changed manually are owned by @netdatabot.
+# This way we prevent modifications which will be overwriten by automation.
+
+# Global (default) code owner
+* @ktsaou @cakrit
+
+# Ownership by directory structure
+.travis/ @paulkatsoulakis @cakrit
+.github/ @paulkatsoulakis @cakrit
+backends/ @thiagoftsm @vlvkobal
+backends/graphite/ @thiagoftsm @vlvkobal
+backends/json/ @thiagoftsm @vlvkobal
+backends/opentsdb/ @thiagoftsm @vlvkobal
+backends/prometheus/ @vlvkobal @paulkatsoulakis @thiagoftsm
+build/ @paulkatsoulakis @cakrit
+collectors/ @vlvkobal @mfundul @cakrit
+collectors/charts.d.plugin/ @paulkatsoulakis @cakrit
+collectors/freebsd.plugin/ @vlvkobal @thiagoftsm @cakrit
+collectors/macos.plugin/ @vlvkobal @thiagoftsm @cakrit
+collectors/node.d.plugin/ @VLegakis @cakrit
+collectors/node.d.plugin/fronius/ @ccremer @cakrit
+collectors/node.d.plugin/snmp/ @VLegakis @cakrit
+collectors/node.d.plugin/stiebeleltron/ @ccremer @cakrit
+collectors/python.d.plugin/ @ilyam8
+collectors/cups.plugin/ @simonnagl @vlvkobal @thiagoftsm @cakrit
+daemon/ @thiagoftsm @mfundul @cakrit
+database/ @mfundul @thiagoftsm @cakrit
+docs/ @cakrit @joelhans
+health/ @thiagoftsm @vlvkobal @cakrit
+health/health.d/ @thiagoftsm @vlvkobal @cakrit
+health/notifications/ @Ferroin @thiagoftsm @cakrit
+libnetdata/ @thiagofsm @mfundul @cakrit
+packaging/ @paulkatsoulakis @cakrit
+packaging/installer/ @paulkatsoulakis @cakrit
+packaging/makeself/ @paulkatsoulakis @cakrit
+registry/ @VLegakis @cakrit
+streaming/ @thiagoftsm @vlvkobal @cakrit
+web/ @thiagoftsm @mfundul @vlvkobal @cakrit
+web/gui/ @VLegakis @cakrit
+
+# Ownership by filetype (overwrites ownership by directory)
+*.md @cakrit @joelhans
+*.am @paulkatsoulakis
+
+# Ownership of specific files
+.gitignore @paulkatsoulakis @cakrit
+.travis.yml @paulkatsoulakis
+.lgtm.yml @paulkatsoulakis
+.eslintrc @paulkatsoulakis
+.eslintignore @paulkatsoulakis
+.csslintrc @paulkatsoulakis
+.codeclimate.yml @paulkatsoulakis
+.codacy.yml @paulkatsoulakis
+netdata.spec.in @paulkatsoulakis
+netdata-installer.sh @paulkatsoulakis @cakrit
+netlify.toml @cakrit
+package.json @VLegakis
+packaging/version @netdatabot
+
+LICENSE.md @cakrit @joelhans
+CHANGELOG.md @netdatabot
